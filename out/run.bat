@@ -1,0 +1,1 @@
+"C:\Program Files\Java\jdk-17.0.1\bin\java.exe" -jar crank.jar
