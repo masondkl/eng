@@ -50,7 +50,7 @@ fun window(block: Window.() -> (Unit)) {
         glViewport(0, 0, nextWidth, nextHeight)
     }
     val camera = object : Camera {
-        override val projection = Matrix4f().setOrtho(-640f, 640f, -360f, 360f, 0f, 100f)
+        override val projection = Matrix4f().setOrtho(-40f, 40f, -22.5f, 22.5f, 0f, 100f)
         override val view = Matrix4f().identity().lookAt(
             Vector3f(0f, 0f, 20f),
             Vector3f(0f, 0f, -1f),
@@ -59,8 +59,8 @@ fun window(block: Window.() -> (Unit)) {
         override var position = fvec()
         override fun move() {
             view.identity().lookAt(
-                Vector3f(round(position.x), round(position.y), 20f),
-                Vector3f(round(position.x), round(position.y), -1f),
+                Vector3f(position.x, position.y, 20f),
+                Vector3f(position.x, position.y, -1f),
                 Vector3f(0f, 1f, 0f)
             )
         }
