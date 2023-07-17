@@ -84,8 +84,8 @@ suspend fun Connection(
                         return result
                     }
                     if (readBuffer.limit() - readBuffer.position() < size) {
-                        val dest = ByteArray(readBuffer.position() - cursor)
-                        readBuffer.get(cursor, dest)
+                        val dest = ByteArray(readBuffer.position() - cursor) { readBuffer.get(cursor + it)}
+//                        readBuffer.get(dest, cursor, dest.size)
                         readBuffer.clear()
                         readBuffer.put(dest)
                         cursor = 0
@@ -118,7 +118,7 @@ suspend fun Connection(
                         } catch (throwable: Throwable) {
                             open = false
                             close()
-//                            throwable.printStackTrace()
+                            throwable.printStackTrace()
                             error("Closed")
                         }
                         position(0)

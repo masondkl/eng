@@ -45,7 +45,7 @@ void main()
         float s4 = point.y - ay;
 
         float w1 = (ax * s1 + s4 * s2 - point.x * s1) / (s3 * s2 - (bx-ax) * s1);
-        float w2 = (s4- w1 * s3) / s1;
+        float w2 = (s4 - w1 * s3) / s1;
         if (inside = (w1 >= 0 && w2 >= 0 && (w1 + w2) <= 1)) break;
 //        if (inside) break;
     }

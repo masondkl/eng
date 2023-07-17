@@ -16,8 +16,15 @@ value class FloatVector(private val array: FloatArray = FloatArray(2) { 0f }) {
 
 fun fvec(): FloatVector = vec(0f, 0f)
 fun vec(x: Float, y: Float) = FloatVector(floatArrayOf(x, y))
-fun vec(value: Float) = vec(value, value)
 fun vec(value: FloatVector) = vec(value.x, value.y)
+
+fun FloatVector.normalize(): FloatVector {
+    val mag = sqrt(x * x + y * y)
+    if (mag == 0f) return this
+    x /= mag
+    y /= mag
+    return this
+}
 
 operator fun FloatVector.plusAssign(b: FloatVector) { x += b.x; y += b.y }
 operator fun FloatVector.minusAssign(b: FloatVector) { x -= b.x; y -= b.y }
@@ -38,13 +45,13 @@ fun FloatVector.rounded(): FloatVector {
         vec(x.roundToInt().toFloat(), y.roundToInt().toFloat())
     } catch (_: Throwable) { fvec() }
 }
-fun FloatVector.round() { x = x.roundToInt().toFloat(); y = y.roundToInt().toFloat() }
+fun FloatVector.round(): FloatVector { x = x.roundToInt().toFloat(); y = y.roundToInt().toFloat(); return this }
 
 fun FloatVector.floored() = vec(floor(x), floor(y))
-fun FloatVector.floor() { x = floor(x); y = floor(y) }
+fun FloatVector.floor(): FloatVector { x = floor(x); y = floor(y); return this }
 
 fun FloatVector.ceiled() = vec(ceil(x), ceil(y))
-fun FloatVector.ceil() { x = ceil(x); y = ceil(y) }
+fun FloatVector.ceil(): FloatVector { x = ceil(x); y = ceil(y); return this }
 
 fun FloatVector.min(b: FloatVector) = vec(min(x, b.x), min(y, b.y))
 fun FloatVector.max(b: FloatVector) = vec(max(x, b.x), max(y, b.y))
@@ -62,7 +69,7 @@ operator fun FloatVector.unaryMinus() = vec(-x, -y)
 fun FloatVector.distance(b: FloatVector) = sqrt((x - b.x).pow(2) + (y - b.y).pow(2))
 fun FloatVector.distanceX(b: FloatVector) = abs(x - b.x)
 fun FloatVector.distanceY(b: FloatVector) = abs(y - b.y)
-fun FloatVector.set(b: FloatVector) { x = b.x; y = b.y }
+fun FloatVector.set(b: FloatVector): FloatVector { x = b.x; y = b.y; return this }
 fun FloatVector.int() = vec(x.toInt(), y.toInt())
 fun FloatVector.clone() = vec(x, y)
 
@@ -78,7 +85,6 @@ value class IntVector(private val array: IntArray = IntArray(2) { 0 }) {
 
 fun ivec(): IntVector = vec(0, 0)
 fun vec(x: Int, y: Int) = IntVector(intArrayOf(x, y))
-fun vec(value: Int) = vec(value, value)
 fun vec(value: IntVector) = vec(value.x, value.y)
 
 operator fun IntVector.plusAssign(b: IntVector) { x += b.x; y += b.y }

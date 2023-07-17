@@ -58,9 +58,11 @@ fun window(block: Window.() -> (Unit)) {
         )
         override var position = fvec()
         override fun move() {
+            val x = (position.x * 32f).toInt() / 32f
+            val y = (position.y * 32f).toInt() / 32f
             view.identity().lookAt(
-                Vector3f(position.x, position.y, 20f),
-                Vector3f(position.x, position.y, -1f),
+                Vector3f(x, y, 20f),
+                Vector3f(x, y, -1f),
                 Vector3f(0f, 1f, 0f)
             )
         }
