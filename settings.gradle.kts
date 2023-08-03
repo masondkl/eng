@@ -2,5 +2,7 @@ rootProject.name = "shooter"
 include(
     "Server",
     "Client",
-    "Sockets"
+    "Shared",
+    "Sockets",
+    "Test"
 )

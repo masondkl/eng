@@ -1,6 +1,7 @@
 plugins {
     kotlin("jvm") version "1.7.20"
     id("com.github.johnrengelman.shadow").version("6.0.0")
+    id("de.esoco.gwt").version("1.1.1")
 }
 
 allprojects {

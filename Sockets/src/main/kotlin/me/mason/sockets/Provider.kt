@@ -2,168 +2,169 @@ package me.mason.sockets
 
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import java.lang.Runtime.getRuntime
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.ByteBuffer.allocate
-import java.nio.ByteBuffer.allocateDirect
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
-import java.util.concurrent.Executors
-import java.util.concurrent.SynchronousQueue
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.CoroutineContext
-import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
-
-val EMPTY_BUFFER: ByteBuffer = allocate(0)
-
-typealias Address = InetSocketAddress
-
-interface Connection {
-    val open: Boolean
-    fun <T> read(block: Read.() -> T): T
-    fun write(block: Write.() -> (Unit))
-    fun close()
-    val read: Read
-    val write: Write
-}
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.text.Charsets.UTF_8
 
 interface Read {
-    fun byte(): Byte
-    fun char(): Char
-    fun short(): Short
-    fun int(): Int
-    fun float(): Float
-    fun double(): Double
-    fun long(): Long
+    suspend fun bytes(size: Int): ByteArray
+    suspend fun byte(): Byte
+    suspend fun char(): Char
+    suspend fun short(): Short
+    suspend fun int(): Int
+    suspend fun float(): Float
+    suspend fun double(): Double
+    suspend fun long(): Long
+    suspend fun string(): String
 }
-
 interface Write {
-    fun byte(byte: Byte)
-    fun char(char: Char)
-    fun short(short: Short)
-    fun int(int: Int)
-    fun float(float: Float)
-    fun double(double: Double)
-    fun long(long: Long)
+    suspend fun bytes(bytes: ByteArray)
+    suspend fun byte(byte: Byte)
+    suspend fun char(char: Char)
+    suspend fun short(short: Short)
+    suspend fun int(int: Int)
+    suspend fun float(float: Float)
+    suspend fun double(double: Double)
+    suspend fun long(long: Long)
+    suspend fun string(string: String)
+}
+interface Connection : Read, Write {
+    val writeLock: Mutex
+    val open: Boolean
+    val read: Read
+    val write: Write
+    suspend fun close()
+    suspend fun onClose(block: suspend () -> (Unit))
 }
 
-
-suspend fun Connection(
-    channel: SocketChannel,
-    context: CoroutineContext,
-    block: suspend Connection.(CoroutineContext) -> (Unit)
-) {
-    coroutineScope<Unit> { launch(context) {
-        val writeBuffer = allocate(Short.MAX_VALUE.toInt())
-        val readBuffer = allocate(Short.MAX_VALUE.toInt())
-        val connection = object : Connection {
-            override var open = true
-            override fun <T> read(block: Read.() -> T): T = read.block()
-            override fun write(block: Write.() -> (Unit)) { write.block() }
-            override fun close() {
-                if (!open) return
-                open = false
-                channel.close()
+suspend fun Connection(channel: SocketChannel): Connection {
+    val isOpen = AtomicBoolean(true)
+    val writeBuffer = allocate(Short.MAX_VALUE.toInt())
+    val readBuffer = allocate(Short.MAX_VALUE.toInt())
+    val tempBytes = ByteArray(Short.MAX_VALUE.toInt())
+    val closeEvents = ArrayList<suspend () -> (Unit)>()
+    suspend fun closeEvents() = closeEvents.forEach { it() }
+    val read = object : Read {
+        var cursor = 0
+        suspend fun <T> read(size: Int, block: ByteBuffer.() -> (T)): T? = readBuffer.run {
+            if (!isOpen.get()) return null
+            if (remaining() < size) {
+                val length = position() - cursor
+                get(cursor, tempBytes, 0, length)
+                position(0)
+                put(tempBytes, 0, length)
+                cursor = 0
             }
-            override val read = object : Read {
-                var cursor = 0
-                override fun byte(): Byte = read(1) { get(cursor) }
-                override fun char(): Char = read(1) { getChar(cursor) }
-                override fun short(): Short = read(2) { getShort(cursor) }
-                override fun int(): Int = read(4) { getInt(cursor) }
-                override fun float(): Float = read(4) { getFloat(cursor) }
-                override fun double(): Double = read(8) { getDouble(cursor) }
-                override fun long(): Long = read(8) { getLong(cursor) }
-                fun <T> read(size: Int, block: ByteBuffer.() -> (T)): T {
-                    if (readBuffer.position() - cursor >= size) {
-                        val result = readBuffer.block()
-                        cursor += size
-                        return result
-                    }
-                    if (readBuffer.limit() - readBuffer.position() < size) {
-                        val dest = ByteArray(readBuffer.position() - cursor) { readBuffer.get(cursor + it)}
-//                        readBuffer.get(dest, cursor, dest.size)
-                        readBuffer.clear()
-                        readBuffer.put(dest)
-                        cursor = 0
-                    }
-                    try {
-                        channel.read(readBuffer)
-                        val result = readBuffer.block()
-                        cursor += size
-                        return result
-                    } catch (throwable: Throwable) {
-                        open = false
-                        close()
-//                        throwable.printStackTrace()
-                        error("Closed")
-                    }
+            while (isOpen.get() && position() - cursor < size) {
+                try {
+                    if (channel.read(readBuffer) == -1) error("End of stream")
+                } catch (err: Throwable) {
+                    if (isOpen.get()) closeEvents()
+                    isOpen.set(false)
+                    try { channel.close() }
+                    catch (_: Throwable) { }
+                    return null
                 }
             }
-            override val write = object : Write {
-                override fun byte(byte: Byte) { write { put(byte) } }
-                override fun char(char: Char) { write { putChar(char) } }
-                override fun int(int: Int) { write { putInt(int) } }
-                override fun float(float: Float) { write { putFloat(float) } }
-                override fun double(double: Double) { write { putDouble(double) } }
-                override fun long(long: Long) { write { putLong(long) } }
-                override fun short(short: Short) { write { putShort(short) } }
-                fun write(block: ByteBuffer.() -> (ByteBuffer)) {
-                    writeBuffer.apply {
-                        try {
-                            channel.write(block().flip())
-                        } catch (throwable: Throwable) {
-                            open = false
-                            close()
-                            throwable.printStackTrace()
-                            error("Closed")
-                        }
-                        position(0)
-                        limit(capacity())
-                    }
+            val result = block()
+            cursor += size
+            result
+        }
+        override suspend fun bytes(size: Int): ByteArray = read(size) {
+            val bytes = ByteArray(size)
+            get(cursor, bytes)
+            bytes
+        }!!
+        override suspend fun byte(): Byte = read(1) { get(cursor) }!!
+        override suspend fun char(): Char = read(1) { getChar(cursor) }!!
+        override suspend fun short(): Short = read(2) { getShort(cursor) }!!
+        override suspend fun int(): Int = read(4) { getInt(cursor) }!!
+        override suspend fun float(): Float = read(4) { getFloat(cursor) }!!
+        override suspend fun double(): Double = read(8) { getDouble(cursor) }!!
+        override suspend fun long(): Long = read(8) { getLong(cursor) }!!
+        override suspend fun string(): String {
+            val size = int()
+            val bytes = bytes(size)
+            return String(bytes, UTF_8)
+        }
+    }
+    val write = object : Write {
+        override suspend fun bytes(bytes: ByteArray) { write { put(bytes, 0, bytes.size) } }
+        override suspend fun byte(byte: Byte) { write { put(byte) } }
+        override suspend fun char(char: Char) { write { putChar(char) } }
+        override suspend fun short(short: Short) { write { putShort(short) } }
+        override suspend fun int(int: Int) { write { putInt(int) } }
+        override suspend fun float(float: Float) { write { putFloat(float) } }
+        override suspend fun double(double: Double) { write { putDouble(double) } }
+        override suspend fun long(long: Long) { write { putLong(long) } }
+        override suspend fun string(string: String) {
+            val bytes = string.toByteArray(UTF_8)
+            int(bytes.size)
+            bytes(bytes)
+        }
+        suspend fun write(block: ByteBuffer.() -> (ByteBuffer)) {
+            if (!isOpen.get()) return
+            writeBuffer.apply {
+                try {
+                    channel.write(block().flip())
+                    position(0)
+                    limit(capacity())
+                } catch (err: Throwable) {
+                    if (isOpen.get()) closeEvents()
+                    isOpen.set(false)
+                    try { channel.close() }
+                    catch (_: Throwable) { }
                 }
             }
         }
-        connection.block(context)
-    } }
-}
-
-suspend fun accept(port: Int, block: suspend Connection.(CoroutineContext) -> (Unit)) {
-    val dispatcher = ThreadPoolExecutor(
-        0, Int.MAX_VALUE,
-        1L, TimeUnit.SECONDS,
-        SynchronousQueue()
-    ).asCoroutineDispatcher()
-    val serverChannel = ServerSocketChannel.open().bind(Address(port))
-    GlobalScope.launch(dispatcher) {
-        while(isActive) {
-            val channel = serverChannel.accept()
-            try { Connection(channel, coroutineContext, block) }
-            catch (_: Throwable) {
-//                println(it.message)
-            }
+    }
+    return object : Connection, Write by write, Read by read {
+        override val writeLock = Mutex()
+        override val open: Boolean get() = isOpen.get()
+        override val read = read
+        override val write = write
+        override suspend fun close() {
+            if (isOpen.get()) closeEvents()
+            isOpen.set(false)
+            try { channel.close() }
+            catch (_: Throwable) { }
+        }
+        override suspend fun onClose(block: suspend () -> Unit) {
+            closeEvents += block
         }
     }
 }
 
-suspend fun connect(addr: String, port: Int, block: suspend Connection.(CoroutineContext) -> (Unit)) {
-    val address = Address(addr, port)
+suspend fun accept(port: Int, block: suspend Connection.() -> (Unit)) {
+    val dispatcher = newFixedThreadPoolContext(getRuntime().availableProcessors(), "Server")
+    val serverChannel = ServerSocketChannel.open().bind(InetSocketAddress(port))
+    serverChannel.configureBlocking(false)
+    while (true) {
+        val channel = serverChannel.accept() ?: continue
+        channel.configureBlocking(false)
+        GlobalScope.launch(dispatcher) {
+            val connection = Connection(channel)
+            try { connection.block() }
+            catch (_: Throwable) { println("Caught high level error") }
+        }
+    }
+}
+
+suspend fun connect(addr: String, port: Int, block: suspend Connection.() -> (Unit)): Connection? {
+    val address = InetSocketAddress(addr, port)
     val channel = SocketChannel.open()
-    if (!channel.connect(address)) return
-    val dispatcher = ThreadPoolExecutor(
-        0, Int.MAX_VALUE,
-        1L, TimeUnit.SECONDS,
-        SynchronousQueue()
-    ).asCoroutineDispatcher()
+    if (!channel.connect(address)) return null
+    channel.configureBlocking(false)
+    val dispatcher = newFixedThreadPoolContext(getRuntime().availableProcessors() / 2, "Client")
+    val connection = Connection(channel)
     GlobalScope.launch(dispatcher) {
-        while(!channel.isConnected) { delay(50) }
-        try { Connection(channel, coroutineContext, block) }
-        catch(_: Throwable) {
-//            println(it.message)
-        }
-//        cancel("gg")
+        try { connection.block() }
+        catch(_: Throwable) { println("Caught high level error") }
     }
+    return connection
 }
