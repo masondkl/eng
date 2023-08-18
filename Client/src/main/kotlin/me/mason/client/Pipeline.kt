@@ -1,5 +1,8 @@
 package me.mason.client
 
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import me.mason.shared.*
 import org.joml.*
 import org.lwjgl.BufferUtils.createIntBuffer
 import org.lwjgl.glfw.GLFW.*
@@ -13,37 +16,52 @@ import org.lwjgl.stb.STBImage.stbi_load
 import org.lwjgl.system.MemoryUtil.NULL
 import java.nio.file.Path
 import java.util.*
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.path.absolutePathString
 import kotlin.io.path.readBytes
+import kotlin.io.path.readLines
 
 val DEFAULT_SIZE = Vector2i(1280, 720)
 
-fun Int.compileShader(src: String): Int {
-    glShaderSource(this, src)
-    glCompileShader(this)
-    if (glGetShaderi(this, GL_COMPILE_STATUS) == GL_FALSE) {
-        val len = glGetShaderi(this, GL_INFO_LOG_LENGTH)
-        error(glGetShaderInfoLog(this, len))
-    }; return this
+interface Glyph {
+    val x: Int
+    val y: Int
+    val width: Int
+    val height: Int
+    val offsetX: Int
+    val offsetY: Int
+    val advance: Int
 }
-
-class Shader(vert: Path, frag: Path, vararg val attrs: Int) {
-    private val vertId = glCreateShader(GL_VERTEX_SHADER).compileShader(String(vert.readBytes()))
-    private val fragId = glCreateShader(GL_FRAGMENT_SHADER).compileShader(String(frag.readBytes()))
-    val program = glCreateProgram()
-    val stride = attrs.sum()
-    init {
-        glAttachShader(program, vertId)
-        glAttachShader(program, fragId)
-        glLinkProgram(program)
-        if (glGetProgrami(program, GL_LINK_STATUS) == GL_FALSE) {
-            val len = glGetProgrami(program, GL_INFO_LOG_LENGTH)
-            error(glGetProgramInfoLog(program, len))
+interface Font {
+    val size: Int
+    val lineHeight: Int
+    val chars: HashMap<Int, Glyph>
+}
+fun font(path: Path): Font {
+    val lines = path.readLines()
+    val font = object : Font {
+        override val size = lines[0].trim().removePrefix("size=").toInt()
+        override val lineHeight = lines[1].trim().removePrefix("lineHeight=").toInt()
+        override val chars = HashMap<Int, Glyph>()
+    }
+    for (i in 0 until lines[2].trim().removePrefix("chars=").toInt()) {
+        val line = i + 3
+        val data = lines[line].split(" ").mapNotNull { value ->
+            if (value.all { it == ' ' }) return@mapNotNull null
+            value.trim { (it !in '0'..'9') && it != '-' }
+        }
+        val ascii = data[0].toInt()
+        font.chars[ascii] = object : Glyph {
+            override val x = data[1].toInt()
+            override val y = data[2].toInt()
+            override val width = data[3].toInt()
+            override val height = data[4].toInt()
+            override val offsetX = data[5].toInt()
+            override val offsetY = data[6].toInt()
+            override val advance = data[7].toInt()
         }
     }
+    return font
 }
-
 fun atlas(path: Path) = glGenTextures().also { id ->
     glBindTexture(GL_TEXTURE_2D, id)
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT)
@@ -70,34 +88,193 @@ fun atlas(path: Path) = glGenTextures().also { id ->
     stbi_image_free(image)
 }
 
-class Buffer(val shader: Shader, size: Int = 200000, private val draw: Buffer.(IntRange) -> (Unit)) {
+fun Int.compileShader(src: String): Int {
+    glShaderSource(this, src)
+    glCompileShader(this)
+    if (glGetShaderi(this, GL_COMPILE_STATUS) == GL_FALSE) {
+        val len = glGetShaderi(this, GL_INFO_LOG_LENGTH)
+        error(glGetShaderInfoLog(this, len))
+    }; return this
+}
+
+class Shader(vert: Path, frag: Path, vararg val attrs: Int) {
+    private val vertId = glCreateShader(GL_VERTEX_SHADER).compileShader(String(vert.readBytes()))
+    private val fragId = glCreateShader(GL_FRAGMENT_SHADER).compileShader(String(frag.readBytes()))
+    val program = glCreateProgram()
+    val stride = attrs.sum()
+    val quad = stride * 6
+    val triangle = stride * 3
+    init {
+        glAttachShader(program, vertId)
+        glAttachShader(program, fragId)
+        glLinkProgram(program)
+        if (glGetProgrami(program, GL_LINK_STATUS) == GL_FALSE) {
+            val len = glGetProgrami(program, GL_INFO_LOG_LENGTH)
+            error(glGetProgramInfoLog(program, len))
+        }
+    }
+}
+
+interface Reserve {
+    val parent: Reserve?
+    val shader: Shader
+
+    val start: Int
+    var reserve: Int
+    var count: Int
+
+    fun vec2f(vector: Vector2f)
+    fun vec2f(index: Int, vector: Vector2f)
+    fun vec3f(vector: Vector3f)
+    fun vec3f(index: Int, vector: Vector3f)
+    fun vec4f(vector: Vector4f)
+    fun vec4f(index: Int, vector: Vector4f)
+    fun float(float: Float)
+    fun float(index: Int, float: Float)
+    fun clear()
+    fun clear(index: Int, count: Int)
+    fun draw()
+    fun draw(index: Int, count: Int)
+}
+
+suspend fun Reserve.reserve(amount: Int, block: suspend Reserve.() -> (Unit)): Reserve {
+    val parent = this
+    return object : Reserve {
+        override val parent: Reserve? = parent
+        override val shader = parent.shader
+        override val start = parent.reserve
+        override var reserve = 0
+        override var count = 0
+        override fun vec2f(vector: Vector2f) {
+            parent.vec2f(start + count, vector)
+            count += 2
+        }
+        override fun vec2f(index: Int, vector: Vector2f) {
+            parent.vec2f(start + index, vector)
+        }
+        override fun vec3f(vector: Vector3f) {
+            parent.vec3f(start + count, vector)
+            count += 3
+        }
+        override fun vec3f(index: Int, vector: Vector3f) {
+            parent.vec3f(start + index, vector)
+        }
+        override fun vec4f(vector: Vector4f) {
+            parent.vec4f(start + count, vector)
+            count += 4
+        }
+        override fun vec4f(index: Int, vector: Vector4f) {
+            parent.vec4f(start + index, vector)
+        }
+        override fun float(float: Float) {
+            parent.float(start + count, float)
+            count++
+        }
+        override fun float(index: Int, float: Float) {
+            parent.float(start + index, float)
+        }
+        override fun clear() {
+            parent.clear(start + reserve, count)
+            count = 0
+        }
+        override fun clear(index: Int, count: Int) {
+            parent.clear(start + index, count)
+        }
+        override fun draw() {
+            println("\ninner: ${start + reserve}; $count")
+            parent.draw(start + reserve, count)
+        }
+        override fun draw(index: Int, count: Int) {
+            parent.draw(start + index, count)
+        }
+    }.apply {
+        block()
+        parent.reserve += amount
+    }
+}
+
+fun ShaderBuffer.drawReserves(vararg reserves: Reserve) {
+    reserves.minBy {
+        var offset = it.start +
+        var cursor = it
+        while(cursor.parent != null) {
+
+        }
+    }
+    draw()
+    reserves.forEach {
+
+    }
+}
+
+class ShaderBuffer(val shader: Shader, size: Int = 200000, val draw: ShaderBuffer.(Int, Int) -> (Unit)) {
     val data: FloatArray = FloatArray(size)
     val vao: Int = glGenVertexArrays()
     val vbo: Int = glGenBuffers()
-    val triangle = shader.stride * 3
-    val quad = shader.stride * 6
-    fun vec2f(pos: Int, vector: Vector2f) {
-        data[pos] = vector.x
-        data[pos + 1] = vector.y
+    var reserve = 0
+    suspend fun reserve(amount: Int, block: suspend Reserve.() -> (Unit) = {}): Reserve {
+        val buffer = this
+        return object : Reserve {
+            override val parent: Reserve? = null
+            override val shader = buffer.shader
+            override val start = buffer.reserve
+            override var reserve = 0
+            override var count = 0
+            override fun vec2f(vector: Vector2f) {
+                data[start + reserve + count++] = vector.x
+                data[start + reserve + count++] = vector.y
+            }
+            override fun vec2f(index: Int, vector: Vector2f) {
+                data[start + index] = vector.x
+                data[start + index + 1] = vector.y
+            }
+            override fun vec3f(vector: Vector3f) {
+                data[start + reserve + count++] = vector.x
+                data[start + reserve + count++] = vector.y
+                data[start + reserve + count++] = vector.z
+            }
+            override fun vec3f(index: Int, vector: Vector3f) {
+                data[start + index] = vector.x
+                data[start + index + 1] = vector.y
+                data[start + index + 2] = vector.z
+            }
+            override fun vec4f(vector: Vector4f) {
+                data[start + reserve + count++] = vector.x
+                data[start + reserve + count++] = vector.y
+                data[start + reserve + count++] = vector.z
+                data[start + reserve + count++] = vector.w
+            }
+            override fun vec4f(index: Int, vector: Vector4f) {
+                data[start + index] = vector.x
+                data[start + index + 1] = vector.y
+                data[start + index + 2] = vector.z
+                data[start + index + 3] = vector.w
+            }
+            override fun float(float: Float) {
+                data[start + reserve + count++] = float
+            }
+            override fun float(index: Int, float: Float) {
+                data[start + index] = float
+            }
+            override fun clear() {
+                data.fill(0f, start, reserve + count)
+                count = 0
+            }
+            override fun clear(index: Int, count: Int) {
+                data.fill(0f, start + index, start + index + count)
+            }
+            override fun draw() {
+                draw(this@ShaderBuffer, start + reserve, count)
+            }
+            override fun draw(index: Int, count: Int) {
+                println("\nouter: ${start + index}; $count")
+                draw(this@ShaderBuffer, start + index, count)
+            }
+        }.apply {
+            block()
+            buffer.reserve += amount
+        }
     }
-    fun vec3f(pos: Int, vector: Vector3f) {
-        data[pos] = vector.x
-        data[pos + 1] = vector.y
-        data[pos + 2] = vector.z
-    }
-    fun vec4f(pos: Int, vector: Vector4f) {
-        data[pos] = vector.x
-        data[pos + 1] = vector.y
-        data[pos + 2] = vector.z
-        data[pos + 3] = vector.w
-    }
-    fun float(pos: Int, float: Float) {
-        data[pos] = float
-    }
-    fun clear(range: IntRange) {
-        data.fill(0f, range.first, range.last)
-    }
-    fun draw(range: IntRange) = draw(this, range)
     init {
         glBindVertexArray(vao)
         glBindBuffer(GL_ARRAY_BUFFER, vbo)
@@ -110,65 +287,86 @@ class Buffer(val shader: Shader, size: Int = 200000, private val draw: Buffer.(I
     }
 }
 
-val CORNERS = arrayOf(
-    Vector2i(1, 1),
-    Vector2i(1, 0),
-    Vector2i(0, 1),
-    Vector2i(1, 0),
+val TOP_LEFT_CORNERS = arrayOf(
     Vector2i(0, 0),
-    Vector2i(0, 1),
+    Vector2i(1, 0),
+    Vector2i(1, 1),
+    Vector2i(1, 1),
+    Vector2i(0, 0),
+    Vector2i(0, 1)
 )
 
-fun Buffer.textureQuad(index: Int, pos: Vector2f, dim: Vector2f, uvPos: Vector2i, uvDim: Vector2i, z: Int = 0) {
-    val topLeftX = pos.x - (dim.x / 2f)
-    val topLeftY = pos.y - (dim.y / 2f)
-    for (vertex in 0 until 6) {
-        val offset = index + vertex * shader.stride
-        val uvX = uvPos.x + uvDim.x * CORNERS[vertex].x
-        val uvY = uvPos.y + uvDim.y * CORNERS[vertex].y
-        float(offset, topLeftX + dim.x * CORNERS[vertex].x)
-        float(offset + 1, topLeftY + dim.y * CORNERS[vertex].y)
-        float(offset + 2, z.toFloat())
-        float(offset + 3, uvX + uvY * 512.toFloat())
+val CORNERS = arrayOf(
+    Vector2f(-0.5f, -0.5f),
+    Vector2f(0.5f, -0.5f),
+    Vector2f(0.5f, 0.5f),
+    Vector2f(0.5f, 0.5f),
+    Vector2f(-0.5f, -0.5f),
+    Vector2f(-0.5f, 0.5f)
+)
+
+fun Reserve.fontQuads(font: Font, start: Vector2f, string: String, size: Float = 0.025f, z: Int = 0) {
+    val position = start.copy()
+    string.forEach {
+        if (!font.chars.containsKey(it.code)) return@forEach
+        val glyph = font.chars[it.code]!!
+        val glyphPosition = position.copy()
+        glyphPosition.x += glyph.offsetX * size
+        glyphPosition.y -= glyph.offsetY * size
+        for (vertex in 0 until 6) {
+            val uvX = glyph.x + glyph.width * TOP_LEFT_CORNERS[vertex].x
+            val uvY = glyph.y + glyph.height - glyph.height * TOP_LEFT_CORNERS[vertex].y
+            float(glyphPosition.x + (glyph.width * size) * TOP_LEFT_CORNERS[vertex].x)
+            float(glyphPosition.y - (glyph.height * size) + (glyph.height * size) * TOP_LEFT_CORNERS[vertex].y)
+            float(z.toFloat())
+            float((uvX + uvY * 512).toFloat())
+        }
+        position.x += glyph.advance * size
     }
 }
 
-fun Buffer.colorTriangle(index: Int, a: Vector2f, b: Vector2f, c: Vector2f, color: Vector4f, z: Int = 0) {
-    vec3f(index + 0, Vector3f(a, z.toFloat()))
-    vec4f(index + 3, color)
-
-    vec3f(index + 7, Vector3f(b, z.toFloat()))
-    vec4f(index + 10, color)
-
-    vec3f(index + 14, Vector3f(c, z.toFloat()))
-    vec4f(index + 17, color)
-}
-
-fun Buffer.fovTriangle(index: Int, a: Vector2f, b: Vector2f, c: Vector2f, z: Int = 0) {
-    vec3f(index + 0, Vector3f(a, z.toFloat()))
-    vec3f(index + 3, Vector3f(b, z.toFloat()))
-    vec3f(index + 6, Vector3f(c, z.toFloat()))
-}
-
-
-fun Buffer.colorQuad(index: Int, pos: Vector2f, dim: Vector2f, color: Vector4f, z: Int = 0) {
-    val topLeftX = pos.x - (dim.x / 2f)
-    val topLeftY = pos.y - (dim.y / 2f)
+fun Reserve.textureQuad(pos: Vector2f, dim: Vector2f, uvPos: Vector2i, uvDim: Vector2i, z: Int = 0) {
     for (vertex in 0 until 6) {
-        val offset = index + vertex * shader.stride
-        float(offset, topLeftX + dim.x * CORNERS[vertex].x)
-        float(offset + 1, topLeftY + dim.y * CORNERS[vertex].y)
-        float(offset + 2, z.toFloat())
-        vec4f(offset + 3, color)
+        val uvX = uvPos.x + uvDim.x * TOP_LEFT_CORNERS[vertex].x
+        val uvY = uvPos.y + uvDim.y * TOP_LEFT_CORNERS[vertex].y
+        float(pos.x + dim.x * CORNERS[vertex].x)
+        float(pos.y + dim.y * CORNERS[vertex].y)
+        float(z.toFloat())
+        float((uvX + uvY * 512).toFloat())
+    }
+}
+
+fun Reserve.colorTriangle(a: Vector2f, b: Vector2f, c: Vector2f, color: Vector4f, z: Int = 0) {
+    vec3f(Vector3f(a, z.toFloat()))
+    vec4f(color)
+
+    vec3f(Vector3f(b, z.toFloat()))
+    vec4f(color)
+
+    vec3f(Vector3f(c, z.toFloat()))
+    vec4f(color)
+}
+
+fun Reserve.fovTriangle(a: Vector2f, b: Vector2f, c: Vector2f, z: Int = 0) {
+    vec3f(Vector3f(a, z.toFloat()))
+    vec3f(Vector3f(b, z.toFloat()))
+    vec3f(Vector3f(c, z.toFloat()))
+}
+
+fun Reserve.colorQuad(pos: Vector2f, dim: Vector2f, color: Vector4f, z: Int = 0) {
+    for (vertex in 0 until 6) {
+        float(pos.x + dim.x * CORNERS[vertex].x)
+        float(pos.y + dim.y * CORNERS[vertex].y)
+        float(z.toFloat())
+        vec4f(color)
     }
 }
 
 interface Window {
-    val keyEvent: ArrayList<(Int, Int) -> (Unit)>
-    val mouseEvent: ArrayList<(Int, Int) -> (Unit)>
-    val keys: BitSet
-    val buttons: BitSet
-
+    val keyEvent: ArrayList<suspend (Int, Int) -> (Unit)>
+    val mouseEvent: ArrayList<suspend (Int, Int) -> (Unit)>
+    val keyState: BitSet
+    val mouseState: BitSet
     val window: Long
     var dim: Vector2i
     var title: Any
@@ -179,12 +377,12 @@ interface Window {
 
     fun move()
 
-    fun onClosed(block: () -> (Unit))
-    fun onTick(block: (Float, Float) -> (Unit))
-    fun fixed(fps: Int): AtomicBoolean
+    suspend fun onClosed(block: suspend () -> (Unit))
+    suspend fun onTick(block: suspend (Float, Float) -> (Unit))
+    suspend fun onFixed(fps: Int, block: suspend (Float, Float) -> (Unit))
 }
 
-fun window(block: Window.() -> (Unit)) {
+suspend fun window(block: suspend Window.() -> (Unit)) = coroutineScope {
     createPrint(System.err).set()
     if (!glfwInit()) error("Unable to initialize GLFW")
     glfwDefaultWindowHints()
@@ -211,10 +409,9 @@ fun window(block: Window.() -> (Unit)) {
         glfwSetWindowSize(id, nextWidth, nextHeight)
         glViewport(0, 0, nextWidth, nextHeight)
     }
-    val onClosed = ArrayList<() -> (Unit)>()
-    val onTick = ArrayList<(Float, Float) -> (Unit)>()
-    object : Window {
-        val remainders = HashMap<Int, Float>()
+    val onClosed = ArrayList<suspend () -> (Unit)>()
+    val onTick = ArrayList<suspend (Float, Float) -> (Unit)>()
+    val window = object : Window {
         override val projection = Matrix4f().setOrtho(-40f, 40f, -22.5f, 22.5f, 0f, 100f)
         override val view = Matrix4f().identity().lookAt(
             Vector3f(0f, 0f, 20f),
@@ -228,11 +425,11 @@ fun window(block: Window.() -> (Unit)) {
                 Vector3f(0f, 1f, 0f)
             )
         }
-        override fun onClosed(block: () -> Unit) = onClosed.plusAssign(block)
-        override val keyEvent = ArrayList<(Int, Int) -> Unit>()
-        override val mouseEvent = ArrayList<(Int, Int) -> Unit>()
-        override val keys = BitSet()
-        override val buttons = BitSet()
+        override suspend fun onClosed(block: suspend () -> Unit) = onClosed.plusAssign(block)
+        override val keyEvent = ArrayList<suspend (Int, Int) -> Unit>()
+        override val mouseEvent = ArrayList<suspend (Int, Int) -> Unit>()
+        override val keyState = BitSet()
+        override val mouseState = BitSet()
         override val window = id
         override var camera = Vector2f(0f, 0f)
             set(value) {
@@ -255,44 +452,39 @@ fun window(block: Window.() -> (Unit)) {
                 glfwSetWindowTitle(id, value.toString())
                 field = value
             }
-        override fun onTick(block: (Float, Float) -> (Unit)) = onTick.plusAssign(block)
-        override fun fixed(fps: Int): AtomicBoolean {
-            val isFixed = AtomicBoolean(false)
+        override suspend fun onTick(block: suspend (Float, Float) -> (Unit)) = onTick.plusAssign(block)
+        override suspend fun onFixed(fps: Int, block: suspend (Float, Float) -> (Unit)) {
+            var remainder = 0f
             val rate = 1f / fps
-            onTick.plusAssign { delta, elapsed ->
-                val from = remainders.getOrPut(fps) { 0f }
-                val to = (from + delta) % rate
-                if (to < from) isFixed.set(true)
-                else isFixed.set(false)
-                remainders[fps] = to
+            onTick += { delta, elapsed ->
+                val from = remainder
+                val to = from + delta
+                remainder = if (to > rate) { block(delta, elapsed); to % rate } else to
             }
-            return isFixed
-        }
-        init {
-            glfwSetKeyCallback(window) { _, code, _, action, _ ->
-                keyEvent.forEach { it(code, action) }
-                if (action == GLFW_PRESS) keys.set(code)
-                else if (action == GLFW_RELEASE) keys.clear(code)
-            }
-            glfwSetMouseButtonCallback(window) { _, code, action, _ ->
-                mouseEvent.forEach { it(code, action) }
-                if (action == GLFW_PRESS) buttons.set(code)
-                else if (action == GLFW_RELEASE) buttons.clear(code)
-            }
-            block()
-            var elapsed = 0L
-            var delta: Long
-            var last = System.nanoTime()
-            while (!glfwWindowShouldClose(id)) {
-                val now = System.nanoTime()
-                delta = now - last
-                elapsed += delta
-                last = now
-                val deltaSeconds = delta / 1000000000f
-                val elapsedSeconds = elapsed / 1000000000f
-                onTick.forEach { it(deltaSeconds, elapsedSeconds) }
-            }
-            onClosed.forEach { it() }
         }
     }
+    glfwSetKeyCallback(id) { _, code, _, action, _ ->
+        launch { window.keyEvent.forEach { it(code, action) } }
+        if (action == GLFW_PRESS) window.keyState.set(code)
+        else if (action == GLFW_RELEASE) window.keyState.clear(code)
+    }
+    glfwSetMouseButtonCallback(id) { _, code, action, _ ->
+        launch { window.mouseEvent.forEach { it(code, action) } }
+        if (action == GLFW_PRESS) window.mouseState.set(code)
+        else if (action == GLFW_RELEASE) window.mouseState.clear(code)
+    }
+    block(window)
+    var elapsed = 0L
+    var delta: Long
+    var last = System.nanoTime()
+    while (!glfwWindowShouldClose(id)) {
+        val now = System.nanoTime()
+        delta = now - last
+        elapsed += delta
+        last = now
+        val deltaSeconds = delta / 1000000000f
+        val elapsedSeconds = elapsed / 1000000000f
+        onTick.forEach { it(deltaSeconds, elapsedSeconds) }
+    }
+    onClosed.forEach { it() }
 }

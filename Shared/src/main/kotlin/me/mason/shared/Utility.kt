@@ -18,35 +18,51 @@ inline fun BitSet.forEach(block: (Int) -> (Unit)) {
         idx = nextSetBit(idx + 1)
     }
 }
-fun BitSet.first(block: (Int) -> (Boolean)): Int {
-    val idx = nextSetBit(0)
+inline fun BitSet.clearIf(block: (Int) -> (Boolean)) {
+    var idx = nextSetBit(0)
+    while(idx != -1) {
+        if (block(idx)) clear(idx)
+        idx = nextSetBit(idx + 1)
+    }
+}
+inline fun BitSet.forEachIndexed(block: (Int, Int) -> (Unit)) {
+    var loopIndex = 0
+    var idx = nextSetBit(0)
+    while(idx != -1) {
+        block(loopIndex++, idx)
+        idx = nextSetBit(idx + 1)
+    }
+}
+inline fun BitSet.first(block: (Int) -> (Boolean)): Int {
+    var idx = nextSetBit(0)
     while(idx != -1) {
         if (block(idx)) return idx
+        idx = nextSetBit(idx + 1)
     }
     return -1
 }
-fun BitSet.all(block: (Int) -> (Boolean)): Boolean {
+inline fun BitSet.all(block: (Int) -> (Boolean)): Boolean {
     var idx = nextSetBit(0)
     while(idx != -1) {
         if (!block(idx)) return false
         idx = nextSetBit(idx + 1)
     }; return true
 }
-fun BitSet.any(block: (Int) -> (Boolean)): Boolean {
+inline fun BitSet.any(block: (Int) -> (Boolean)): Boolean {
     var idx = nextSetBit(0)
     while(idx != -1) {
         if (block(idx)) return true
         idx = nextSetBit(idx + 1)
     }; return false
 }
-fun BitSet.none(block: (Int) -> (Boolean)): Boolean {
+inline fun BitSet.none(block: (Int) -> (Boolean)): Boolean {
     var idx = nextSetBit(0)
     while(idx != -1) {
         if (block(idx)) return false
         idx = nextSetBit(idx + 1)
     }; return true
 }
-fun BitSet.count(block: (Int) -> (Boolean)): Int {
+inline fun BitSet.count(block: (Int) -> (Boolean)): Int {
     var count = 0
     var idx = nextSetBit(0)
     while(idx != -1) {

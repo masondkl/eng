@@ -11,5 +11,5 @@ tasks.shadowJar {
     println("Destination directory: $outDir")
     archiveFileName.set("Server.jar")
     destinationDirectory.set(file(outDir))
-    manifest.attributes["Main-Class"] = "me.mason.server.Serverv2Kt"
+    manifest.attributes["Main-Class"] = "me.mason.server.ServerKt"
 }

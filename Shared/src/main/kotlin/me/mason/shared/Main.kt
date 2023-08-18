@@ -1,25 +1,48 @@
 package me.mason.shared
 
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import me.mason.sockets.Read
 import me.mason.sockets.Write
 import org.joml.Vector2f
 import org.joml.Vector2i
-import java.nio.ByteBuffer
-import java.util.ArrayList
+import java.util.*
 import kotlin.math.abs
 import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
-val TILE_SIZE_VEC = Vector2f(1.0f, 1.0f)
-val TILE_UV_SIZE = 4
-val TILE_UV_SIZE_VEC = Vector2i(TILE_UV_SIZE, TILE_UV_SIZE)
+val BOMB_DEFUSE_RADIUS = 9.5f / 2f
+
+val TILE_SIZE = Vector2f(1.0f, 1.0f)
+val TILE_RADIUS = Vector2f(0.5f, 0.5f)
+val TILE_UV_SIZE = Vector2i(4, 4)
 val TILES = Array(11) {
-    val x = (it * 4) % 512
-    val y = ((it * 4) / 512) * 4
+    val x = it * 4
+    val y = 508
     Vector2i(x, y)
 }
 val SOLIDS = arrayOf(0.toByte(), 1.toByte())
+
+class Pool<T>(private val clear: (T) -> (T), size: Int = 1024, initial: () -> (T)) {
+    companion object {
+        val vec2f = Pool({ it.set(0f, 0f) }) { Vector2f() }
+        val vec2i = Pool({ it.set(0, 0) }) { Vector2i() }
+    }
+    private val lock = Mutex()
+    private val pool: Queue<T> = LinkedList<T>()
+        .apply { (0 until size).forEach { _ -> add(initial()) } }
+    private val deferred: Queue<T> = LinkedList()
+    suspend fun take(): T = lock.withLock { pool.poll().also { println(pool.size) } }
+    suspend fun release(it: T) = lock.withLock { pool.add(clear(it)) }
+    private suspend fun takeDeferred(): T = lock.withLock { pool.poll().also { deferred.add(it); println(pool.size) } }
+    suspend fun <R> defer(block: suspend Pool<T>.(suspend () -> (T)) -> (R)): R {
+        val result = block(::takeDeferred)
+        while(deferred.isNotEmpty()) release(deferred.poll())
+        return result
+    }
+}
+
 
 const val RENDER_SIZE = 82
 const val RENDER_RADIUS = RENDER_SIZE / 2
@@ -68,35 +91,35 @@ fun Collider.move(motion: Vector2f, collisions: List<Collider>): Vector2f {
     return change
 }
 
-interface RayResult<T> {
+interface TiledRay {
     val result: Boolean
-    var data: T?
-    val distance: Float
     val hit: Vector2f
-    val hitTile: Vector2i
-    val side: Int
+    val tile: Vector2i
+    val distance: Float
 }
 
-fun <T> RayResult<T>.copy() = object : RayResult<T> {
-    override val result = this@copy.result
-    override var data = this@copy.data
-    override val distance = this@copy.distance
-    override val hit = this@copy.hit.copy()
-    override val hitTile = this@copy.hitTile.copy()
-    override val side = this@copy.side
-}
+//interface RayResult<T> {
+//    val result: Boolean
+//    var data: T?
+//    val distance: Float
+//    val hit: Vector2f
+//    val hitTile: Vector2i
+//    val side: Int
+//}
 
 fun ByteArray.tiledRaycast(
     worldSize: Int,
     start: Vector2f,
     dir: Vector2f,
     max: Float = RENDER_RADIUS.toFloat()
-): RayResult<Unit> {
+): TiledRay {
     val currentTileCoord = Vector2i(start.x.roundToInt(), start.y.roundToInt())
     val bottomLeft = Vector2f(currentTileCoord.x - 0.5f, currentTileCoord.y - 0.5f)
     val rayMaxStepSize = Vector2f(abs(1 / dir.x), abs(1 / dir.y))
     val rayStepLength = Vector2f(0f, 0f)
     val mapStep = Vector2i(0, 0)
+    val tempPos = Vector2f()
+    val tempDir = Vector2f()
 
     if (dir.x < 0) {
         mapStep.x = -1
@@ -115,18 +138,18 @@ fun ByteArray.tiledRaycast(
     }
 
     var fDistance = 0f
-    var currentCoord = Vector2f(0.0f, 0.0f)
-    var hitSomething = false
+    var currentCoord: Vector2f? = null
+    var hitSomething: Boolean
 
     while (fDistance < max) {
-        currentCoord = start.copy()
+        currentCoord = tempPos.set(start)
         if (rayStepLength.x < rayStepLength.y) {
-            currentCoord = currentCoord + dir * rayStepLength.x
+            currentCoord = tempPos.set(currentCoord).add(tempDir.set(dir).mul(rayStepLength))
             currentTileCoord.x += mapStep.x
             fDistance = rayStepLength.x
             rayStepLength.x += rayMaxStepSize.x
         } else {
-            currentCoord = currentCoord + dir * rayStepLength.y
+            currentCoord = tempPos.set(currentCoord).add(tempDir.set(dir).mul(rayStepLength))
             currentTileCoord.y += mapStep.y
             fDistance = rayStepLength.y
             rayStepLength.y += rayMaxStepSize.y
@@ -143,49 +166,48 @@ fun ByteArray.tiledRaycast(
     hitSomething = true
     //TODO:idk
 //    quad(shader, idx, if (hitSomething) currentCoord else start + dir * max, TILE_SIZE_VEC, PLAYER, PLAYER_UV_SIZE_VEC)
-    return object : RayResult<Unit> {
+    return object : TiledRay {
         override val result = hitSomething
-        override var data: Unit? = Unit
         override val distance = fDistance
-        override val hit = if (hitSomething) currentCoord else start + dir * max
-        override val hitTile = currentTileCoord
-        override val side =
-            if (hit.x == currentTileCoord.x - 0.5f) 0
-            else if (hit.x == currentTileCoord.x + 0.5f) 2
-            else if (hit.y == currentTileCoord.y - 0.5f) 3
-            else if (hit.y == currentTileCoord.y + 0.5f) 1
-            else -1
+        override val hit =
+            if (hitSomething) currentCoord!!
+            else tempPos.set(start).add(tempDir.set(dir).mul(max))
+        override val tile = currentTileCoord
     }
 }
 
-fun <T> raycast(
+interface Ray<T> {
+    val result: Boolean
+    val hit: Vector2f
+    val distance: Float
+    var collision: T?
+}
+
+suspend fun <T> raycast(
     start: Vector2f,
     dir: Vector2f,
     max: Float = RENDER_RADIUS.toFloat(),
-    test: RayResult<T>.(Vector2f) -> (Boolean)
-): RayResult<T> {
+    test: suspend Ray<T>.(Vector2f) -> (Boolean)
+): Ray<T> {
     val position = start.copy()
-    val rayResult = object : RayResult<T> {
+    val ray = object : Ray<T> {
         override var result = false
-        override var data: T? = null
         override var distance = 0f
+        override var collision: T? = null
         override val hit = position
-        override val hitTile = position.round(Vector2f()).int()
-        override val side = -1
     }
-    rayResult.result = rayResult.test(position)
-    if (rayResult.result) return rayResult
+    ray.result = ray.test(position)
+    if (ray.result) return ray
     var distance = sqrt((position.x - start.x).pow(2) + (position.y - start.y).pow(2))
     while (distance < max) {
-        position += dir
+        position.add(dir)
         distance = sqrt((position.x - start.x).pow(2) + (position.y - start.y).pow(2))
-        rayResult.result = rayResult.test(position)
-        rayResult.distance = distance
-        if (rayResult.result) return rayResult
+        ray.result = ray.test(position)
+        ray.distance = distance
+        if (ray.result) return ray
     }
-    rayResult.distance = 0f
-    rayResult.data = null
-    return rayResult
+    ray.collision = null
+    return ray
 }
 
 //
@@ -213,22 +235,28 @@ suspend fun Write.vec2i(vec: Vector2i) { int(vec.x); int(vec.y) }
 suspend fun Read.vec2f() = Vector2f(float(), float())
 suspend fun Read.vec2i() = Vector2i(int(), int())
 
-val RED_SPAWN = 0.toByte()
-val BLUE_SPAWN = 1.toByte()
-
-data class TileMap(val name: String, val worldSize: Int, val world: ByteArray)
+data class Bounds(val min: Vector2f = Vector2f(), val max: Vector2f = Vector2f())
+data class TileMap(val name: String, val worldSize: Int, val walls: List<Bounds>, val world: ByteArray)
 
 suspend fun Write.map(map: TileMap) {
     string(map.name)
     int(map.worldSize)
+    int(map.walls.size)
+    for (wall in map.walls) {
+        vec2f(wall.min)
+        vec2f(wall.max)
+    }
     bytes(map.world)
 }
 
 suspend fun Read.map(): TileMap {
     val name = string()
     val worldSize = int()
+    val wallCount = int()
+    val walls = ArrayList<Bounds>()
+    (0 until wallCount).forEach { _ -> walls.add(Bounds(vec2f(), vec2f())) }
     val bytes = bytes(worldSize * worldSize)
-    return TileMap(name, worldSize, bytes)
+    return TileMap(name, worldSize, walls, bytes)
 }
 
 fun main() {

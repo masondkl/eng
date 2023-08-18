@@ -8,6 +8,7 @@ import java.nio.ByteBuffer
 import java.nio.ByteBuffer.allocate
 import java.nio.channels.ServerSocketChannel
 import java.nio.channels.SocketChannel
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.text.Charsets.UTF_8
 
@@ -41,7 +42,6 @@ interface Connection : Read, Write {
     suspend fun close()
     suspend fun onClose(block: suspend () -> (Unit))
 }
-
 suspend fun Connection(channel: SocketChannel): Connection {
     val isOpen = AtomicBoolean(true)
     val writeBuffer = allocate(Short.MAX_VALUE.toInt())
@@ -70,6 +70,7 @@ suspend fun Connection(channel: SocketChannel): Connection {
                     catch (_: Throwable) { }
                     return null
                 }
+                delay(1)
             }
             val result = block()
             cursor += size
@@ -129,6 +130,7 @@ suspend fun Connection(channel: SocketChannel): Connection {
         override val read = read
         override val write = write
         override suspend fun close() {
+
             if (isOpen.get()) closeEvents()
             isOpen.set(false)
             try { channel.close() }
@@ -141,7 +143,7 @@ suspend fun Connection(channel: SocketChannel): Connection {
 }
 
 suspend fun accept(port: Int, block: suspend Connection.() -> (Unit)) {
-    val dispatcher = newFixedThreadPoolContext(getRuntime().availableProcessors(), "Server")
+    val dispatcher = newFixedThreadPoolContext(getRuntime().availableProcessors() * 16, "Server")
     val serverChannel = ServerSocketChannel.open().bind(InetSocketAddress(port))
     serverChannel.configureBlocking(false)
     while (true) {
@@ -160,11 +162,11 @@ suspend fun connect(addr: String, port: Int, block: suspend Connection.() -> (Un
     val channel = SocketChannel.open()
     if (!channel.connect(address)) return null
     channel.configureBlocking(false)
-    val dispatcher = newFixedThreadPoolContext(getRuntime().availableProcessors() / 2, "Client")
+    val dispatcher = newFixedThreadPoolContext(getRuntime().availableProcessors() * 8, "Client")
     val connection = Connection(channel)
     GlobalScope.launch(dispatcher) {
         try { connection.block() }
-        catch(_: Throwable) { println("Caught high level error") }
+        catch(e: Throwable) { e.printStackTrace(); println("Caught high level error") }
     }
     return connection
 }
