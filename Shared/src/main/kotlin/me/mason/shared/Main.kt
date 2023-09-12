@@ -14,6 +14,8 @@ import kotlin.math.sqrt
 
 val BOMB_DEFUSE_RADIUS = 9.5f / 2f
 
+const val LERP_POS_RATE = 50L
+
 val TILE_SIZE = Vector2f(1.0f, 1.0f)
 val TILE_RADIUS = Vector2f(0.5f, 0.5f)
 val TILE_UV_SIZE = Vector2i(4, 4)
@@ -24,6 +26,9 @@ val TILES = Array(11) {
 }
 val SOLIDS = arrayOf(0.toByte(), 1.toByte())
 
+val VOTE_MAP = 0
+val VOTE_KICK = 1
+
 class Pool<T>(private val clear: (T) -> (T), size: Int = 1024, initial: () -> (T)) {
     companion object {
         val vec2f = Pool({ it.set(0f, 0f) }) { Vector2f() }
@@ -33,12 +38,9 @@ class Pool<T>(private val clear: (T) -> (T), size: Int = 1024, initial: () -> (T
     private val pool: Queue<T> = LinkedList<T>()
         .apply { (0 until size).forEach { _ -> add(initial()) } }
     private val deferred: Queue<T> = LinkedList()
-    suspend fun take(): T = lock.withLock { pool.poll().also { println(pool.size) } }
-    suspend fun release(it: T) = lock.withLock { pool.add(clear(it)) }
-    private suspend fun takeDeferred(): T = lock.withLock { pool.poll().also { deferred.add(it); println(pool.size) } }
-    suspend fun <R> defer(block: suspend Pool<T>.(suspend () -> (T)) -> (R)): R {
-        val result = block(::takeDeferred)
-        while(deferred.isNotEmpty()) release(deferred.poll())
+    suspend fun <R> take(block: suspend Pool<T>.(suspend () -> (T)) -> (R)): R {
+        val result = block { lock.withLock { pool.poll().also { deferred.add(it) } } }
+        while(deferred.isNotEmpty()) lock.withLock { pool.add(clear(deferred.poll())) }
         return result
     }
 }
@@ -91,12 +93,11 @@ fun Collider.move(motion: Vector2f, collisions: List<Collider>): Vector2f {
     return change
 }
 
-interface TiledRay {
-    val result: Boolean
-    val hit: Vector2f
-    val tile: Vector2i
-    val distance: Float
-}
+data class TiledRay(
+    val hit: Vector2f = Vector2f(),
+    val tile: Vector2i = Vector2i(),
+    var distance: Float = 0f
+)
 
 //interface RayResult<T> {
 //    val result: Boolean
@@ -111,6 +112,7 @@ fun ByteArray.tiledRaycast(
     worldSize: Int,
     start: Vector2f,
     dir: Vector2f,
+    result: TiledRay,
     max: Float = RENDER_RADIUS.toFloat()
 ): TiledRay {
     val currentTileCoord = Vector2i(start.x.roundToInt(), start.y.roundToInt())
@@ -118,7 +120,6 @@ fun ByteArray.tiledRaycast(
     val rayMaxStepSize = Vector2f(abs(1 / dir.x), abs(1 / dir.y))
     val rayStepLength = Vector2f(0f, 0f)
     val mapStep = Vector2i(0, 0)
-    val tempPos = Vector2f()
     val tempDir = Vector2f()
 
     if (dir.x < 0) {
@@ -138,18 +139,17 @@ fun ByteArray.tiledRaycast(
     }
 
     var fDistance = 0f
-    var currentCoord: Vector2f? = null
-    var hitSomething: Boolean
+    var currentCoord = Vector2f(0.0f, 0.0f)
 
     while (fDistance < max) {
-        currentCoord = tempPos.set(start)
+        currentCoord = start.copy()
         if (rayStepLength.x < rayStepLength.y) {
-            currentCoord = tempPos.set(currentCoord).add(tempDir.set(dir).mul(rayStepLength))
+            currentCoord.add(tempDir.set(dir).mul(rayStepLength.x))
             currentTileCoord.x += mapStep.x
             fDistance = rayStepLength.x
             rayStepLength.x += rayMaxStepSize.x
         } else {
-            currentCoord = tempPos.set(currentCoord).add(tempDir.set(dir).mul(rayStepLength))
+            currentCoord.add(tempDir.set(dir).mul(rayStepLength.y))
             currentTileCoord.y += mapStep.y
             fDistance = rayStepLength.y
             rayStepLength.y += rayMaxStepSize.y
@@ -158,21 +158,14 @@ fun ByteArray.tiledRaycast(
         if(currentTileCoord.x >= worldSize || currentTileCoord.x < 0 ||
             currentTileCoord.y >= worldSize || currentTileCoord.y < 0 ||
             this[index] in SOLIDS
-        ) {
-            hitSomething = true
-            break
-        }
+        ) break
     }
-    hitSomething = true
     //TODO:idk
 //    quad(shader, idx, if (hitSomething) currentCoord else start + dir * max, TILE_SIZE_VEC, PLAYER, PLAYER_UV_SIZE_VEC)
-    return object : TiledRay {
-        override val result = hitSomething
-        override val distance = fDistance
-        override val hit =
-            if (hitSomething) currentCoord!!
-            else tempPos.set(start).add(tempDir.set(dir).mul(max))
-        override val tile = currentTileCoord
+    return result.apply {
+        distance = fDistance
+        hit.set(currentCoord)
+        tile.set(currentTileCoord)
     }
 }
 
@@ -236,7 +229,26 @@ suspend fun Read.vec2f() = Vector2f(float(), float())
 suspend fun Read.vec2i() = Vector2i(int(), int())
 
 data class Bounds(val min: Vector2f = Vector2f(), val max: Vector2f = Vector2f())
-data class TileMap(val name: String, val worldSize: Int, val walls: List<Bounds>, val world: ByteArray)
+data class TileMap(val name: String, val worldSize: Int, val walls: List<Bounds>, val world: ByteArray, val colliders: Array<Collider>, val corners: Array<Vector2f>)
+
+//tileColliders = Array(map.worldSize * map.worldSize) {
+//    if (map.world[it] in SOLIDS) {
+//        val x = it % map.worldSize
+//        val y = it / map.worldSize
+//        Collider(Vector2f(x.toFloat(), y.toFloat()), TILE_SIZE)
+//    } else Collider(Vector2f(0f, 0f), Vector2f(0f, 0f))
+//}
+//corners = ArrayList<Vector2f>().apply {
+//    map.walls.indices.forEach {
+//        val wall = map.walls[it]
+//        val min = wall.min
+//        val max = wall.max
+//        add(Vector2f(min.x, min.y))
+//        add(Vector2f(max.x, min.y))
+//        add(Vector2f(min.x, max.y))
+//        add(Vector2f(max.x, max.y))
+//    }
+//}
 
 suspend fun Write.map(map: TileMap) {
     string(map.name)
@@ -256,7 +268,31 @@ suspend fun Read.map(): TileMap {
     val walls = ArrayList<Bounds>()
     (0 until wallCount).forEach { _ -> walls.add(Bounds(vec2f(), vec2f())) }
     val bytes = bytes(worldSize * worldSize)
-    return TileMap(name, worldSize, walls, bytes)
+    val colliders = Array(worldSize * worldSize) {
+        if (bytes[it] in SOLIDS) {
+            val x = it % worldSize
+            val y = it / worldSize
+            Collider(Vector2f(x.toFloat(), y.toFloat()), TILE_SIZE)
+        } else Collider(Vector2f(0f, 0f), Vector2f(0f, 0f))
+    }
+    val corners = Array(walls.size * 4) { Vector2f() }
+    walls.indices.forEach {
+        val wall = walls[it]
+        val min = wall.min
+        val max = wall.max
+        corners[it * 4] = Vector2f(min.x, min.y)
+        corners[it * 4 + 1] = Vector2f(max.x, min.y)
+        corners[it * 4 + 2] = Vector2f(min.x, max.y)
+        corners[it * 4 + 3] = Vector2f(max.x, max.y)
+    }
+    return TileMap(name, worldSize, walls, bytes, colliders, corners)
+}
+
+fun contains(pos: Vector2f, otherPos: Vector2f, otherDim: Vector2f): Boolean {
+    val otherRad = Vector2f(otherDim.x / 2f, otherDim.y / 2f)
+    val min = Vector2f(otherPos).sub(otherRad)
+    val max = Vector2f(otherPos).add(otherRad)
+    return pos.x >= min.x && pos.y >= min.y && pos.x <= max.x && pos.y <= max.y
 }
 
 fun main() {

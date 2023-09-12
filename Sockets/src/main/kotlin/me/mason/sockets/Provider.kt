@@ -14,6 +14,7 @@ import kotlin.text.Charsets.UTF_8
 
 interface Read {
     suspend fun bytes(size: Int): ByteArray
+    suspend fun bool(): Boolean
     suspend fun byte(): Byte
     suspend fun char(): Char
     suspend fun short(): Short
@@ -25,6 +26,7 @@ interface Read {
 }
 interface Write {
     suspend fun bytes(bytes: ByteArray)
+    suspend fun bool(bool: Boolean)
     suspend fun byte(byte: Byte)
     suspend fun char(char: Char)
     suspend fun short(short: Short)
@@ -35,14 +37,14 @@ interface Write {
     suspend fun string(string: String)
 }
 interface Connection : Read, Write {
-    val writeLock: Mutex
+    val dispatcher: CoroutineDispatcher
     val open: Boolean
     val read: Read
     val write: Write
     suspend fun close()
     suspend fun onClose(block: suspend () -> (Unit))
 }
-suspend fun Connection(channel: SocketChannel): Connection {
+suspend fun Connection(dispatcher: CoroutineDispatcher, channel: SocketChannel): Connection {
     val isOpen = AtomicBoolean(true)
     val writeBuffer = allocate(Short.MAX_VALUE.toInt())
     val readBuffer = allocate(Short.MAX_VALUE.toInt())
@@ -81,6 +83,8 @@ suspend fun Connection(channel: SocketChannel): Connection {
             get(cursor, bytes)
             bytes
         }!!
+
+        override suspend fun bool(): Boolean = read(1) { get(cursor) }!! == 1.toByte()
         override suspend fun byte(): Byte = read(1) { get(cursor) }!!
         override suspend fun char(): Char = read(1) { getChar(cursor) }!!
         override suspend fun short(): Short = read(2) { getShort(cursor) }!!
@@ -96,6 +100,7 @@ suspend fun Connection(channel: SocketChannel): Connection {
     }
     val write = object : Write {
         override suspend fun bytes(bytes: ByteArray) { write { put(bytes, 0, bytes.size) } }
+        override suspend fun bool(bool: Boolean) { write { put(if (bool) 1.toByte() else 0.toByte()) } }
         override suspend fun byte(byte: Byte) { write { put(byte) } }
         override suspend fun char(char: Char) { write { putChar(char) } }
         override suspend fun short(short: Short) { write { putShort(short) } }
@@ -125,7 +130,7 @@ suspend fun Connection(channel: SocketChannel): Connection {
         }
     }
     return object : Connection, Write by write, Read by read {
-        override val writeLock = Mutex()
+        override val dispatcher = dispatcher
         override val open: Boolean get() = isOpen.get()
         override val read = read
         override val write = write
@@ -150,7 +155,7 @@ suspend fun accept(port: Int, block: suspend Connection.() -> (Unit)) {
         val channel = serverChannel.accept() ?: continue
         channel.configureBlocking(false)
         GlobalScope.launch(dispatcher) {
-            val connection = Connection(channel)
+            val connection = Connection(dispatcher, channel)
             try { connection.block() }
             catch (_: Throwable) { println("Caught high level error") }
         }
@@ -163,7 +168,7 @@ suspend fun connect(addr: String, port: Int, block: suspend Connection.() -> (Un
     if (!channel.connect(address)) return null
     channel.configureBlocking(false)
     val dispatcher = newFixedThreadPoolContext(getRuntime().availableProcessors() * 8, "Client")
-    val connection = Connection(channel)
+    val connection = Connection(dispatcher, channel)
     GlobalScope.launch(dispatcher) {
         try { connection.block() }
         catch(e: Throwable) { e.printStackTrace(); println("Caught high level error") }
