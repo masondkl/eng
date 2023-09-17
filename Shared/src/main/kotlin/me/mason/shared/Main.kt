@@ -1,9 +1,9 @@
 package me.mason.shared
 
+import com.github.exerosis.mynt.base.Read
+import com.github.exerosis.mynt.base.Write
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import me.mason.sockets.Read
-import me.mason.sockets.Write
 import org.joml.Vector2f
 import org.joml.Vector2i
 import java.util.*
@@ -190,7 +190,9 @@ suspend fun <T> raycast(
         override val hit = position
     }
     ray.result = ray.test(position)
-    if (ray.result) return ray
+    if (ray.result) {
+        return ray
+    }
     var distance = sqrt((position.x - start.x).pow(2) + (position.y - start.y).pow(2))
     while (distance < max) {
         position.add(dir)
@@ -222,6 +224,19 @@ suspend fun <T> raycast(
 //        override val world = world
 //    }
 //}
+
+suspend fun Write.string(string: String) {
+    val bytes = string.toByteArray()
+    int(bytes.size)
+    bytes(bytes, bytes.size, 0)
+}
+
+suspend fun Read.string(): String {
+    val size = int()
+    val array = ByteArray(size)
+    bytes(array, size, 0)
+    return String(array)
+}
 
 suspend fun Write.vec2f(vec: Vector2f) { float(vec.x); float(vec.y) }
 suspend fun Write.vec2i(vec: Vector2i) { int(vec.x); int(vec.y) }
@@ -258,7 +273,7 @@ suspend fun Write.map(map: TileMap) {
         vec2f(wall.min)
         vec2f(wall.max)
     }
-    bytes(map.world)
+    bytes(map.world, map.worldSize * map.worldSize, 0)
 }
 
 suspend fun Read.map(): TileMap {
@@ -267,7 +282,8 @@ suspend fun Read.map(): TileMap {
     val wallCount = int()
     val walls = ArrayList<Bounds>()
     (0 until wallCount).forEach { _ -> walls.add(Bounds(vec2f(), vec2f())) }
-    val bytes = bytes(worldSize * worldSize)
+    val bytes = ByteArray(worldSize * worldSize)
+    bytes(bytes, worldSize * worldSize, 0)
     val colliders = Array(worldSize * worldSize) {
         if (bytes[it] in SOLIDS) {
             val x = it % worldSize

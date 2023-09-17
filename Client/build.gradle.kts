@@ -2,7 +2,7 @@ val lwjglVersion = "3.2.3"
 val lwjglNatives = "natives-windows"
 
 dependencies {
-//    implementation("com.github.exerosis:mynt:1.1.0")
+    implementation("com.github.exerosis:mynt:1.0.12")
     implementation(project(":Shared"))
     implementation(project(":Sockets"))
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.6.4")

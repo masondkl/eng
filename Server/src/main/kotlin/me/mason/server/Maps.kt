@@ -51,15 +51,15 @@ object Maps {
     operator fun get(map: Int) = maps[map]
 }
 
-context(ServerMatchState)
-fun PlayerState.spawn(map: Int, mode: Int) = Maps.maps[map].run {
+context(Match)
+fun Player.spawn(map: Int, mode: Int) = Maps.maps[map].run {
     if (mode == FFA || mode == TDM) Vector2f(1f, 1f).apply {
         for (tile in (0 until worldSize * worldSize).shuffled()) {
             val tilePos = Vector2i(tile % worldSize, tile / worldSize).float()
-            if (world[tile] in SOLIDS || players.any { it != id && playerStates[it].pos.distance(tilePos) < 30.0f })
+            if (world[tile] in SOLIDS || players.any { id != this@spawn.id && pos.distance(tilePos) < 30.0f })
                 continue
             set((tile % worldSize).toFloat(), (tile / worldSize).toFloat())
         }
-    } else if (terrorist) Maps.terroristSpawns[map].random()
+    } else if (t) Maps.terroristSpawns[map].random()
     else Maps.counterSpawns[map].random()
 }

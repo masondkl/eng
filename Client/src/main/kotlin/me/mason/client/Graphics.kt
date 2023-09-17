@@ -21,6 +21,7 @@ import java.util.*
 import kotlin.io.path.absolutePathString
 import kotlin.io.path.readBytes
 import kotlin.io.path.readLines
+import kotlin.system.exitProcess
 
 val DEFAULT_SIZE = Vector2i(1280, 720)
 
@@ -369,6 +370,26 @@ fun Aggregator.textureQuad(pos: Vector2f, dim: Vector2f, uvPos: Vector2i, uvDim:
     }
 }
 
+fun Aggregator.rotateTextureQuad(pos: Vector2f, dim: Vector2f, uvPos: Vector2i, uvDim: Vector2i, rotation: Float, pivot: Vector2f = pos, z: Int = 0) {
+    if (len + buffer.shader.quad > max) {
+        println("out of bounds")
+        return
+    }
+    val acc = this@Aggregator
+    for (vertex in 0 until 6) {
+        val uvX = uvPos.x + uvDim.x * TOP_LEFT_CORNERS[vertex].x
+        val uvY = uvPos.y + uvDim.y * TOP_LEFT_CORNERS[vertex].y
+        buffer.float(acc.pos + acc.len++, pos.x + dim.x * CORNERS[vertex].x)
+        buffer.float(acc.pos + acc.len++, pos.y + dim.y * CORNERS[vertex].y)
+        buffer.float(acc.pos + acc.len++, z.toFloat())
+        buffer.float(acc.pos + acc.len++, pivot.x)
+        buffer.float(acc.pos + acc.len++, pivot.y)
+        buffer.float(acc.pos + acc.len++, rotation)
+        buffer.float(acc.pos + acc.len++, (uvX + uvY * 512).toFloat())
+    }
+}
+
+
 fun Aggregator.slicedQuads(
     pos: Vector2f, dim: Vector2f, insets: Vector2f,
     uvTopLeft: Vector2i, uvDim: Vector2i, uvInsets: Vector2i,
@@ -465,13 +486,12 @@ interface Window {
 
     fun move()
 
-    suspend fun onClosed(block: suspend () -> (Unit))
     suspend fun onTick(block: suspend (Float, Float) -> (Unit))
     suspend fun onFixed(fps: Int, block: suspend (Float, Float) -> (Unit))
     suspend fun onFixed(fps: () -> (Int), block: suspend (Float, Float) -> (Unit))
 }
 
-suspend fun window(block: suspend Window.() -> (Unit)) = coroutineScope {
+suspend fun window(block: suspend Window.() -> (Unit)) {
     createPrint(System.err).set()
     if (!glfwInit()) error("Unable to initialize GLFW")
     glfwDefaultWindowHints()
@@ -498,7 +518,6 @@ suspend fun window(block: suspend Window.() -> (Unit)) = coroutineScope {
         glfwSetWindowSize(id, nextWidth, nextHeight)
         glViewport(0, 0, nextWidth, nextHeight)
     }
-    val onClosed = ArrayList<suspend () -> (Unit)>()
     val onTick = ArrayList<suspend (Float, Float) -> (Unit)>()
     val window = object : Window {
         override val projection = Matrix4f().setOrtho(-40f, 40f, -22.5f, 22.5f, 0f, 100f)
@@ -520,7 +539,6 @@ suspend fun window(block: suspend Window.() -> (Unit)) = coroutineScope {
                 Vector3f(0f, 1f, 0f)
             )
         }
-        override suspend fun onClosed(block: suspend () -> Unit) = onClosed.plusAssign(block)
         override val keyEvent = ArrayList<suspend (Int, Int) -> Unit>()
         override val mouseEvent = ArrayList<suspend (Int, Int) -> Unit>()
         override val keyState = BitSet()
@@ -590,5 +608,5 @@ suspend fun window(block: suspend Window.() -> (Unit)) = coroutineScope {
         val elapsedSeconds = elapsed / 1000000000f
         onTick.forEach { it(deltaSeconds, elapsedSeconds) }
     }
-    onClosed.forEach { it() }
+    exitProcess(0)
 }

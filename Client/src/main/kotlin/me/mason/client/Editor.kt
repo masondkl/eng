@@ -6,7 +6,6 @@ import org.joml.Vector2i
 import org.joml.Vector4f
 import org.lwjgl.BufferUtils
 import org.lwjgl.glfw.GLFW
-import org.lwjgl.opengl.GL20.*
 import org.lwjgl.opengl.GL30.*
 import java.nio.ByteBuffer
 import java.nio.file.Paths
@@ -220,7 +219,7 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
             Vector2f(TILE_SIZE.x * selected.toFloat(), 0f).add(topLeft).add(camera), TILE_SIZE,
             SELECTED, TILE_UV_SIZE, z = 2
         )
-        editorEntity.textureQuad(camera, TILE_SIZE, COUNTER_PLAYER, PLAYER_UV_SIZE, z = 2)
+        editorEntity.textureQuad(camera, TILE_SIZE, COUNTER_PLAYER, PLAYER_UV_DIM, z = 2)
         for (index in 0 until RENDER_SIZE * RENDER_SIZE) {
             val cameraTile = camera.round(Vector2f()).int()
             val tile = Vector2i(index % RENDER_SIZE, index / RENDER_SIZE).add(cameraTile).sub(RENDER_RADIUS, RENDER_RADIUS)
