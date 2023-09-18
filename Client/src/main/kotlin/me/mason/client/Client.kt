@@ -20,7 +20,10 @@ import java.lang.Math.toRadians
 import java.nio.channels.AsynchronousChannelGroup
 import java.nio.channels.ClosedChannelException
 import java.nio.file.Paths
+import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import kotlin.collections.ArrayList
 import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -98,11 +101,13 @@ val DISPATCHER = SERVICE.asCoroutineDispatcher()
 interface Match {
     var id: Int
     val channel: Channel<suspend Write.() -> (Unit)>
-    val players: Container<Player>
-    val bullets: Container<Bullet>
+//    val players: Container<Player>
+//    val bullets: Container<Bullet>
+    val players: ConcurrentHashMap<Int, Player>
+    val bullets: MutableList<Bullet>
+    val queryAnswers: MutableList<String>
     var query: Boolean
     var queryPrompt: String
-    var queryAnswers: Array<String>
     var map: TileMap?
     var mode: Int
     suspend fun send(block: suspend Write.() -> Unit)
@@ -312,11 +317,11 @@ suspend fun client() = window {
     val match = object : Match {
         override var id: Int = -1
         override val channel = Channel<suspend Write.() -> Unit>(UNLIMITED)
-        override val players = Container<Player>(256) { Player() }
-        override val bullets = Container<Bullet>(256) { Bullet() }
+        override val players = ConcurrentHashMap<Int, Player>()
+        override val bullets = Collections.synchronizedList(ArrayList<Bullet>())
+        override val queryAnswers = Collections.synchronizedList(ArrayList<String>())
         override var query = false
         override var queryPrompt = ""
-        override var queryAnswers: Array<String> = emptyArray()
         override var map: TileMap? = null
         override var mode: Int = -1
         override suspend fun send(block: suspend Write.() -> (Unit)) {
@@ -327,58 +332,45 @@ suspend fun client() = window {
         match.apply match@{
             val connection = provider.connect(address)
             launch {
-                try { channel.consumeEach { connection.write.it() } }
-                catch(throwable: Throwable) {
-                    if (throwable is ClosedChannelException) throwable.printStackTrace()
-                } finally {
-                    connection.close()
-                    channel.close()
-                    //clear
-                }
-            }
-            launch {
                 try {
                     connection.read.apply {
                         id = int()
                         println("Joined as ${id}")
                         map = map()
+                        println("gg1")
                         camera.set(vec2f())
+                        val playerId = id
+                        players[id] = Player().apply player@{ this@player.id = playerId }
+                        println("gg2")
                         move()
+                        launch {
+                            try { channel.consumeEach { connection.write.it() } }
+                            catch(throwable: Throwable) {
+                                if (throwable is ClosedChannelException) throwable.printStackTrace()
+                            } finally {
+                                connection.close()
+                                channel.close()
+                                //clear
+                            }
+                        }
                         while (isActive && provider.isOpen && !glfwWindowShouldClose(window)) {
                             when (int()) {
                                 IN_JOIN -> {
-                                    val id = int()
-                                    println("${id} joined")
-                                    players.enabled.set(id)
-                                    players.states[id].run {
-                                        this.id = id
-                                        health = 1f
-                                        alive = true
-                                        planting = false
-                                        defusing = false
-                                        t = false
-                                        lastPos.set(0f, 0f)
-                                        nextPos.set(0f, 0f)
-                                        lastDir = 0f
-                                        nextDir = 0f
-                                    }
+                                    val joinId = int()
+                                    println("${joinId} joined")
+                                    players[joinId] = Player().apply player@{ this@player.id = joinId }
                                 }
-                                IN_EXIT -> players.clear(id)
+                                IN_EXIT -> players.remove(id)
                                 IN_SHOOT -> {
                                     val pos = vec2f()
                                     val dir = vec2f()
-                                    val (_, next) = bullets.next()
-                                    next.start.set(Vector2f(pos))
-                                    next.pos.set(Vector2f(pos))
-                                    next.dir.set(dir)
-                                    next.tileHit = match.map!!.world.tiledRaycast(match.map!!.worldSize, camera, dir, TiledRay()).distance
+                                    val tileHit = match.map!!.world.tiledRaycast(match.map!!.worldSize, pos, dir, TiledRay()).distance
+                                    bullets.add(Bullet(pos, Vector2f(pos), dir, tileHit))
                                 }
                                 IN_DIE -> {
                                     val id = int()
                                     println("Die(${id})")
-                                    players.states[id].apply {
-                                        alive = false
-                                    }
+                                    players[id]?.alive = false
                                 }
                                 IN_TRY_RESPAWN -> {
                                     send { int(OUT_CONFIRM_RESPAWN) }
@@ -386,11 +378,11 @@ suspend fun client() = window {
                                 IN_RESPAWN -> {
                                     val respawnId = int()
                                     val spawn = vec2f()
-                                    players.states[respawnId].alive = true
+                                    players[respawnId]?.alive = true
                                     if (respawnId == id) {
                                         camera.set(spawn)
                                         move()
-                                    } else players.states[respawnId].apply {
+                                    } else players[respawnId]?.apply {
                                         pos.set(spawn)
                                         lastPos.set(spawn)
                                         nextPos.set(spawn)
@@ -398,12 +390,12 @@ suspend fun client() = window {
                                     }
                                 }
                                 IN_POS -> {
-                                    val id = int()
+                                    val posId = int()
                                     val inPos = vec2f()
                                     val inDir = float()
 //                                    println("IN_POS(${id}, (${inPos.x}, ${inPos.y}), ${inDir})")
 //                                    println("IN_POS(${id})")
-                                    players.states[id].apply {
+                                    players[posId]?.apply {
                                         timePos = timeMillis
                                         lastPos.set(nextPos)
                                         nextPos.set(inPos)
@@ -416,12 +408,11 @@ suspend fun client() = window {
                                     println("in query")
                                     val prompt = string()
                                     val answerCount = int()
-                                    val answers = Array(answerCount) { "" }
+                                    queryAnswers.clear()
                                     for (i in 0 until answerCount)
-                                        answers[i] = string()
+                                        queryAnswers.add(string())
                                     query = true
                                     queryPrompt = prompt
-                                    queryAnswers = answers
                                 }
                                 IN_CANCEL_QUERY -> {
                                     println("cancelled")
@@ -431,33 +422,28 @@ suspend fun client() = window {
                         }
                     }
                 } catch(throwable: Throwable) {
-                    if (throwable is ClosedChannelException) throwable.printStackTrace()
+                    throwable.printStackTrace()
                 } finally {
                     connection.close()
                     channel.close()
                     //clear
                 }
-                println("a")
             }
         }
-        println("a")
     }
     val collider = Collider(Vector2f(), TILE_SIZE)
     fun collider(id: Int): Collider =
-        collider.apply { pos.set(if (match.id != id) match.players.states[id].pos else camera) }
+        collider.apply { pos.set(if (match.id != id) match.players[id]!!.pos else camera) }
     mouseEvent += press@{ code, action ->
-        if (match.id == -1 || settings) return@press
-        val playerState = match.players.states[match.id]
+        if (!match.players.containsKey(match.id) || settings) return@press
+        val playerState = match.players[match.id]!!
         if (code != GLFW_MOUSE_BUTTON_1 || action != GLFW_PRESS || !playerState.alive || match.map == null) return@press
         val mouseWorld = mouseWorld()
         val theta = atan2(camera.y - mouseWorld.y, camera.x - mouseWorld.x) + PI.toFloat()
         val dir = Vector2f(cos(theta), sin(theta))
         match.apply {
-            val (_, next) = bullets.next()
-            next.start.set(camera)
-            next.pos.set(camera.copy())
-            next.dir.set(dir)
-            next.tileHit = map!!.world.tiledRaycast(map!!.worldSize, camera, dir, TiledRay()).distance
+            val tileHit = map!!.world.tiledRaycast(map!!.worldSize, camera, dir, TiledRay()).distance
+            bullets.add(Bullet(camera, camera.copy().add(dir), dir, tileHit))
             send {
                 int(OUT_SHOOT)
                 vec2f(dir)
@@ -488,7 +474,7 @@ suspend fun client() = window {
     var gunDir = 0f
     onFixed(20) { _, _ ->
         val mouseWorld = mouseWorld()
-        if (match.id != -1 && match.map != null && match.players.states[match.id].alive && !settings)
+        if (match.map != null && match.players.containsKey(match.id) && match.players[match.id]!!.alive && !settings)
             gunDir = atan2(camera.y - mouseWorld.y, camera.x - mouseWorld.x) + PI.toFloat()
         match.send {
             int(OUT_POS)
@@ -497,7 +483,7 @@ suspend fun client() = window {
         }
     }
     onFixed(60) { _, elapsed ->
-        if (match.id == -1 || match.map == null || !match.players.states[match.id].alive || settings) return@onFixed
+        if (!match.players.containsKey(match.id) || match.map == null || !match.players[match.id]!!.alive || settings) return@onFixed
         val cameraTile = camera.round(Vector2f()).int()
         val nearbyTileColliders = (0 until COLLISION_SIZE * COLLISION_SIZE).mapNotNull {
             val tile = Vector2i(it % COLLISION_SIZE, it / COLLISION_SIZE).add(cameraTile).sub(COLLISION_RADIUS, COLLISION_RADIUS)
@@ -580,12 +566,12 @@ suspend fun client() = window {
 //    button(uiEntity, fontEntity)
     val unclippedEntity = textureBuffer.aggregator(RENDER_SIZE * RENDER_SIZE * textureShader.quad + textureShader.quad + textureShader.quad * 9)
     onTick { delta, elapsed ->
-        if (match.map == null || match.id == -1 || settings) return@onTick
+        if (match.map == null || !match.players.containsKey(match.id) || settings) return@onTick
         unclippedEntity.clear()
         //Local Player
         unclippedEntity.textureQuad(
             camera, TILE_SIZE,
-            if (!match.players.states[match.id].alive) DEAD_PLAYER else COUNTER_PLAYER, PLAYER_UV_DIM,
+            if (!match.players.containsKey(match.id) || !match.players[match.id]!!.alive) DEAD_PLAYER else COUNTER_PLAYER, PLAYER_UV_DIM,
             z = 3
         )
         //World
@@ -605,7 +591,7 @@ suspend fun client() = window {
     }
     val gunEntity = rotateTextureBuffer.aggregator(256 * rotateTextureShader.quad)
     onFixed({ entityFpsSlider.value.toInt() }) { _, _ ->
-        if (match.map == null || match.id == -1 || settings) return@onFixed
+        if (match.map == null || !match.players.containsKey(match.id) || settings) return@onFixed
         gunEntity.clear()
         val mouseWorld = mouseWorld()
         val theta = atan2(camera.y - mouseWorld.y, camera.x - mouseWorld.x) + PI.toFloat()
@@ -618,13 +604,13 @@ suspend fun client() = window {
             if (flipped) theta - toRadians(180.0).toFloat() else theta,
             z = 10
         )
-        match.players.forEach {
-            flipped = dir >= PI / 2 && dir <= (PI + PI / 2).toFloat()
+        match.players.forEach { (_, player) ->
+            flipped = player.dir >= PI / 2 && player.dir <= (PI + PI / 2).toFloat()
             gunEntity.rotateTextureQuad(
-                Vector2f(pos).add(cos(dir) * 1f, sin(dir) * 1f),
+                Vector2f(player.pos).add(cos(player.dir) * 1f, sin(player.dir) * 1f),
                 GUN_DIM,
                 if (flipped) GUN_FLIPPED else GUN, GUN_UV_DIM,
-                if (flipped) dir - toRadians(180.0).toFloat() else dir,
+                if (flipped) player.dir - toRadians(180.0).toFloat() else player.dir,
                 z = 10
             )
         }
@@ -632,34 +618,38 @@ suspend fun client() = window {
     val clippedEntity = textureBuffer.aggregator(513 * textureShader.quad)
     onFixed({ entityFpsSlider.value.toInt() }) { delta, elapsed ->
         if (match.map == null) return@onFixed
-        match.bullets.clearIf {
-            val shootRay = raycast<Unit>(pos, dir.mul(0.33f, Vector2f()), max = 1f) {
-                val intersected = match.players.firstOrNull { contains(it, pos, TILE_RADIUS) }
-                intersected != null && intersected.id != match.id
+        val speed = (1f/entityFpsSlider.value.toInt()) * 200f
+        val toRemove = ArrayList<Bullet>()
+        match.bullets.forEach { bullet ->
+            val shootRay = raycastBlocking<Unit>(bullet.pos, bullet.dir.mul(speed * 0.1f, Vector2f()), max = speed) { ray ->
+                match.players.values.firstOrNull {
+                    contains(ray, if (it.id == match.id) camera else it.pos, TILE_RADIUS)
+                } != null
             }
-            if (!shootRay.result || shootRay.distance > tileHit) start.distance(pos) > tileHit
-            else false
+            if (shootRay.distance != speed || bullet.start.distance(bullet.pos) > bullet.tileHit) {
+                toRemove.add(bullet)
+            }
         }
+        toRemove.forEach { match.bullets.remove(it) }
         clippedEntity.clear()
         //Bullets
-        match.bullets.forEach {
+        match.bullets.forEach { bullet ->
             clippedEntity.textureQuad(
-                pos,
+                bullet.pos,
                 BULLET_DIM,
                 BULLET,
                 BULLET_UV_DIM,
                 z = 4
             )
-            val scale = (1f/entityFpsSlider.value.toInt()) * 200f
-            pos.add(dir.x * scale, dir.y * scale)
+            bullet.pos.add(bullet.dir.x * speed, bullet.dir.y * speed)
         }
         //Players
-        match.players.forEach {
+        match.players.forEach { (_, player) ->
 //            println("yo what ${id} (${pos.x}, ${pos.y})")
-            if (id == match.id || id >= 256) return@forEach
+            if (player.id == match.id || player.id >= 256) return@forEach
             clippedEntity.textureQuad(
-                pos, TILE_SIZE,
-                if (!alive) DEAD_PLAYER else COUNTER_PLAYER, PLAYER_UV_DIM,
+                player.pos, TILE_SIZE,
+                if (!player.alive) DEAD_PLAYER else COUNTER_PLAYER, PLAYER_UV_DIM,
                 z = 3
             )
         }
@@ -683,7 +673,7 @@ suspend fun client() = window {
     val fovEntity = fovBuffer.aggregator(68000)
     onFixed({ shadowFpsSlider.value.toInt() }) { delta, elapsed ->
 //        println("fps: ${1f/delta}")
-        if (match.map == null || !match.players.states[match.id].alive || match.id == -1) return@onFixed
+        if (match.map == null || !match.players.containsKey(match.id) || !match.players[match.id]!!.alive) return@onFixed
         val mouseWorld = mouseWorld()
         val map = match.map!!
         fovTriangles = 0

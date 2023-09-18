@@ -170,38 +170,62 @@ fun ByteArray.tiledRaycast(
 }
 
 interface Ray<T> {
-    val result: Boolean
     val hit: Vector2f
     val distance: Float
     var collision: T?
 }
 
-suspend fun <T> raycast(
+fun <T> raycastBlocking(
     start: Vector2f,
     dir: Vector2f,
     max: Float = RENDER_RADIUS.toFloat(),
-    test: suspend Ray<T>.(Vector2f) -> (Boolean)
+    test: Ray<T>.(Vector2f) -> (Boolean)
 ): Ray<T> {
     val position = start.copy()
     val ray = object : Ray<T> {
-        override var result = false
         override var distance = 0f
         override var collision: T? = null
         override val hit = position
     }
-    ray.result = ray.test(position)
-    if (ray.result) {
+    if (ray.test(position)) {
         return ray
     }
     var distance = sqrt((position.x - start.x).pow(2) + (position.y - start.y).pow(2))
     while (distance < max) {
         position.add(dir)
         distance = sqrt((position.x - start.x).pow(2) + (position.y - start.y).pow(2))
-        ray.result = ray.test(position)
         ray.distance = distance
-        if (ray.result) return ray
+        if (ray.test(position)) return ray
     }
     ray.collision = null
+    ray.distance = max
+    return ray
+}
+
+suspend fun <T> raycast(
+    start: Vector2f,
+    dir: Vector2f,
+    max: Float,
+    test: suspend Ray<T>.(Vector2f) -> (Boolean)
+): Ray<T> {
+    val position = start.copy()
+    val ray = object : Ray<T> {
+        override var distance = 0f
+        override var collision: T? = null
+        override val hit = position
+    }
+    if (ray.test(position)) {
+        return ray
+    }
+    var distance = sqrt((position.x - start.x).pow(2) + (position.y - start.y).pow(2))
+    while (distance < max) {
+        position.add(dir)
+        distance = sqrt((position.x - start.x).pow(2) + (position.y - start.y).pow(2))
+        ray.distance = distance
+        if (ray.test(position)) return ray
+    }
+    ray.collision = null
+    ray.distance = max
     return ray
 }
 

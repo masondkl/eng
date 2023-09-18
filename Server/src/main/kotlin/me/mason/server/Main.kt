@@ -50,48 +50,37 @@ interface Match {
     var querying: Boolean
     val voters: BitSet
     val responses: IntArray
-    val players: Container<ServerPlayer>
+    val players: MutableList<ServerPlayer>
     var map: Int
+}
+
+fun ServerPlayer(): ServerPlayer = object : ServerPlayer, Player by Player() {
+    override val channel = Channel<suspend Write.() -> (Unit)>(UNLIMITED)
+    override suspend fun send(block: suspend Write.() -> (Unit)) {
+        channel.trySend(block)
+    }
 }
 
 suspend fun main() = runBlocking<Unit>(DISPATCHER) {
     val group = AsynchronousChannelGroup.withThreadPool(SERVICE)
     val provider = SocketProvider(9999, group)
     val address = Address("127.0.0.1", 9999)
+    var entityId = 0
     object : Match {
         override var mode = FFA
         override var querying = false
         override val voters = BitSet(256)
         override val responses = IntArray(256) { -1 }
-        override val players: Container<ServerPlayer> = Container(256) {
-            object : ServerPlayer, Player by Player() {
-                override lateinit var channel: Channel<suspend Write.() -> (Unit)>
-                override suspend fun send(block: suspend Write.() -> (Unit)) {
-                    channel.trySend(block)
-                }
-            }
-        }
+        override val players = Collections.synchronizedList(ArrayList<ServerPlayer>())
         override var map = Maps.random()
     }.apply match@{
         while (provider.isOpen && isActive) {
             val connection = provider.accept(address)
-            val (nextId, player) = players.next()
-            println("Join(${nextId})")
-            player.apply {
-                id = nextId
-                channel = Channel(UNLIMITED)
-                timePos = 0L
-                lastPos.set(0f, 0f)
-                nextPos.set(0f, 0f)
-                pos.set(0f, 0f)
-                lastDir = 0f
-                nextDir = 0f
-                health = 1f
-                alive = true
-                planting = false
-                defusing = false
-                t = false
+            val player = ServerPlayer().apply {
+                id = entityId++
             }
+            players.add(player)
+            println("Join(${player.id})")
             launch {
                 try {
                     player.channel.consumeEach {
@@ -101,28 +90,28 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                     if (throwable !is ClosedChannelException) throwable.printStackTrace()
                 } finally {
                     println("ExitWrite(${player.id})")
-                    players.clear(player.id)
+                    players.remove(player)
                 }
             }
             launch {
                 try {
                     connection.read.apply {
                         player.send {
-                            int(nextId)
+                            int(player.id)
                             map(Maps[map])
                             vec2f(player.spawn(map, mode))
                             players.forEach {
-                                if (nextId == id) return@forEach
-                                println("sending ${id} join to ${nextId}")
+                                if (player.id == it.id) return@forEach
+                                println("sending ${it.id} join to ${player.id}")
                                 int(OUT_JOIN)
-                                int(id)
+                                int(it.id)
                             }
                         }
-                        players.forEach { send {
-                            if (nextId == id) return@send
-                            println("sending ${nextId} join to ${id}")
+                        players.forEach { it.send {
+                            if (player.id == it.id) return@send
+                            println("sending ${player.id} join to ${it.id}")
                             int(OUT_JOIN)
-                            int(nextId)
+                            int(player.id)
                         } }
                         while (provider.isOpen && isActive) {
                             when (int()) {
@@ -134,7 +123,8 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                         lastDir = nextDir
                                         nextDir = float()
                                     }
-//                                    println("Pos(${player.id}, ${player.nextPos.x}, ${player.nextPos.y})")
+//                                    println
+//                                    ("Pos(${player.id}, ${player.nextPos.x}, ${player.nextPos.y})")
 //                                    val min = Vector2f(player.pos.x - TILE_RADIUS.x, player.pos.y - TILE_RADIUS.y)
 //                                    val max = Vector2f(player.pos.x + TILE_RADIUS.x, player.pos.y + TILE_RADIUS.y)
 //                                    val corners = arrayOf(
@@ -142,8 +132,10 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
 //                                        Vector2f(max.x, min.y),
 //                                        Vector2f(min.x, max.y)
 //                                    )
-                                    players.forEach { send {
-                                        if (id == player.id) return@send
+                                    println("out_pos: ${player.id}")
+                                    players.forEach { it.send {
+                                        if (player.id == it.id) return@send
+                                        println("sending to: ${it.id}")
                                         int(OUT_POS)
                                         int(player.id)
                                         vec2f(player.nextPos)
@@ -172,23 +164,22 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                 IN_SHOOT -> {
                                     println("Shoot(${player.id})")
                                     val dir = vec2f()
-                                    println("dist: ${dir.x * 2f}, ${dir.y * 2f}")
-                                    val start = Vector2f(player.nextPos).add(dir.x * 2f, dir.y * 2f)
-                                    players.forEach { send {
-                                        if (id == player.id) return@send
+                                    val start = Vector2f(player.nextPos)
+                                    players.forEach { it.send {
+                                        if (player.id == it.id) return@send
                                         int(OUT_SHOOT)
-                                        vec2f(start)
+                                        vec2f(Vector2f(start).add(dir))
                                         vec2f(dir)
                                     } }
-                                    val playerHit = raycast<ServerPlayer>(start, dir.mul(0.33f)) {
+                                    val playerHit = raycast<ServerPlayer>(start, Vector2f(dir).mul(0.1f), max = 100f) { ray ->
                                         val intersected = players.firstOrNull {
-                                            if (mode == SD && player.t == t) return@firstOrNull false
-                                            contains(it, pos, TILE_SIZE) && player.id != id
+                                            if (mode == SD && player.t == it.t) return@firstOrNull false
+                                            contains(ray, it.pos, TILE_SIZE) && player.id != it.id
                                         }
                                         if (intersected != null) collision = intersected
                                         intersected != null
                                     }
-                                    if (!playerHit.result) continue
+                                    if (playerHit.distance == 100f) continue
                                     val map = Maps[map]
                                     val blockHit = map.world.tiledRaycast(map.worldSize, start, dir, TiledRay())
                                     if (playerHit.distance > blockHit.distance) continue
@@ -199,13 +190,8 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                     if (hitPlayer.health <= 0f) {
                                         hitPlayer.alive = false
                                         println("Die(${hitPlayer.id})")
-                                        println("\nplayers: ")
-                                        players.forEach {
-                                            println(id)
-                                        }
-                                        println()
-                                        players.forEach { send {
-                                            println("sending ${hitPlayer.id} die to $id")
+                                        players.forEach { it.send {
+                                            println("sending die to ${it.id}")
                                             int(OUT_DIE)
                                             int(hitPlayer.id)
                                         } }
@@ -221,7 +207,7 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                         alive = true
                                         health = 1f
                                     }
-                                    players.forEach { send {
+                                    players.forEach { it.send {
                                         int(OUT_RESPAWN)
                                         int(player.id)
                                         vec2f(player.spawn(map, mode))
@@ -237,14 +223,14 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                 IN_CALL_VOTE -> {
                                     voters.set(player.id)
                                     println("Vote(${player.id})")
-                                    if (voters.cardinality() < players.cardinality() || querying) continue
+                                    if (voters.cardinality() < players.size || querying) continue
                                     voters.clear()
                                     querying = true
                                     responses.fill(-1)
                                     players.forEach {
-                                        responses[id] = -1
-                                        send {
-                                            println("Query(${id})")
+                                        responses[it.id] = -1
+                                        it.send {
+                                            println("Query(${it.id})")
                                             int(OUT_QUERY)
                                             string("Vote for a map")
                                             int(Maps.mapNames.size)
@@ -257,12 +243,12 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                         val counts = Array(Maps.mapNames.size) { 0 }
                                         var max = map
                                         players.forEach {
-                                            val response = responses[id]
+                                            val response = responses[it.id]
                                             if (response == -1) return@forEach
                                             if (++counts[response] > counts[max]) max = response
                                         }
                                         if (max == map) {
-                                            players.forEach { send {
+                                            players.forEach { it.send {
                                                 int(OUT_CANCEL_QUERY)
                                             } }
                                             return@delay
@@ -270,7 +256,7 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                         val last = map
                                         map = max
                                         println("SwapMap(last = ${Maps.mapNames[last]}, next = ${Maps.mapNames[map]})")
-                                        players.forEach { send {
+                                        players.forEach { it.send {
                                             int(OUT_CANCEL_QUERY)
                                             int(OUT_MAP)
                                             map(Maps[map])
@@ -285,7 +271,7 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                     throwable.printStackTrace()
                 } finally {
                     println("ExitRead(${player.id})")
-                    players.clear(player.id)
+                    players.remove(player)
                 }
             }
         }
