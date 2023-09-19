@@ -18,12 +18,13 @@ import kotlin.math.max
 import kotlin.math.min
 
 val WALL_COLORS = arrayOf(
-    Vector4f(255f, 0f, 0f, 0.33f),
-    Vector4f(255f, 255f, 0f, 0.33f),
-    Vector4f(0f, 255f, 0f, 0.33f),
-    Vector4f(0f, 255f, 255f, 0.33f),
-    Vector4f(0f, 0f, 255f, 0.33f)
+    Vector4f(1f, 0f, 0f, 0.33f),
+    Vector4f(1f, 1f, 0f, 0.33f),
+    Vector4f(0f, 1f, 0f, 0.33f),
+    Vector4f(0f, 1f, 1f, 0.33f),
+    Vector4f(0f, 0f, 1f, 0.33f)
 )
+val BOMB_PLANT_COLOR = Vector4f(1f, 1f, 1f, 0.33f)
 
 suspend fun editor(fileName: String, inWorldSize: Int) = window {
     val atlas = atlas(Paths.get("shooter_flipped.png"))
@@ -68,9 +69,11 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
     glDepthFunc(GL_LESS)
     glEnable(GL_STENCIL_TEST)
     glStencilOp(GL_KEEP, GL_KEEP, GL_REPLACE)
+
     var worldSize = inWorldSize
     val counterSpawns = HashSet<Vector2f>()
     val terroristSpawns = HashSet<Vector2f>()
+    val plantBounds = HashSet<Bounds>()
     var world = ByteArray(worldSize * worldSize) { 6.toByte() }
     var wallColor = 0
     var walls = ArrayList<Bounds>()
@@ -79,7 +82,6 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
         wallColor = (wallColor + 1) % WALL_COLORS.size
         return color
     }
-
     var selected = 0
     val path = Paths.get(fileName)
     if (path.exists()) {
@@ -90,6 +92,7 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
             for (i in 0 until int) walls.add(Bounds(Vector2f(float, float), Vector2f(float, float)))
             for (i in 0 until int) counterSpawns.add(Vector2f(float, float))
             for (i in 0 until int) terroristSpawns.add(Vector2f(float, float))
+            for (i in 0 until int) plantBounds.add(Bounds(Vector2f(float, float), Vector2f(float, float)))
         }
     }
     GLFW.glfwSetScrollCallback(window) { _, x, y ->
@@ -98,11 +101,12 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
     }
     keyEvent += press@{ code, action ->
         if (code != GLFW.GLFW_KEY_S || action != GLFW.GLFW_PRESS || !keyState[GLFW.GLFW_KEY_LEFT_SHIFT]) return@press
-        val sizeBytes = 16
+        val sizeBytes = 20
         val worldBytes = worldSize * worldSize
-        val spawnBytes = counterSpawns.size * 8 + terroristSpawns.size * 8
+        val spawnBytes = (counterSpawns.size + terroristSpawns.size) * 8
         val wallBytes = walls.size * 16
-        val buffer = ByteBuffer.allocate(sizeBytes + worldBytes + spawnBytes + wallBytes).apply {
+        val plantBytes = plantBounds.size * 16
+        val buffer = ByteBuffer.allocate(sizeBytes + worldBytes + spawnBytes + wallBytes + plantBytes).apply {
             putInt(worldSize)
             put(world)
             putInt(walls.size)
@@ -119,6 +123,11 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
             terroristSpawns.forEach {
                 putFloat(it.x)
                 putFloat(it.y)
+            }
+            putInt(plantBounds.size)
+            plantBounds.forEach { bounds ->
+                putFloat(bounds.min.x); putFloat(bounds.min.y)
+                putFloat(bounds.max.x); putFloat(bounds.max.y)
             }
         }
         println("Saved")
@@ -169,7 +178,22 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
             tempWall.max.set(max)
             walls.add(Bounds(tempWall.min.copy(), tempWall.max.copy()))
         }
-
+    }
+    val tempPlantBounds = Bounds()
+    mouseEvent += right@{ code, action ->
+        if (code != GLFW.GLFW_MOUSE_BUTTON_2 || !keyState[GLFW.GLFW_KEY_LEFT_SHIFT]) return@right
+        val mouse = mouseWorld()
+        val tile = mouse.round(Vector2f())
+        if (action == GLFW.GLFW_PRESS) {
+            tempPlantBounds.min.set(tile)
+        } else if (action == GLFW.GLFW_RELEASE) {
+            tempPlantBounds.max.set(tile)
+            val min = tempPlantBounds.min.min(tempPlantBounds.max, Vector2f()).sub(TILE_RADIUS)
+            val max = tempPlantBounds.min.max(tempPlantBounds.max, Vector2f()).add(TILE_RADIUS)
+            tempPlantBounds.min.set(min)
+            tempPlantBounds.max.set(max)
+            plantBounds.add(Bounds(tempPlantBounds.min.copy(), tempPlantBounds.max.copy()))
+        }
     }
     val topLeft = Vector2f(-38f, 20.5f)
     onFixed(144) { _, _ ->
@@ -202,6 +226,18 @@ suspend fun editor(fileName: String, inWorldSize: Int) = window {
                 rad.add(min),
                 dim,
                 nextWallColor(),
+                z = 10
+            )
+        }
+        plantBounds.forEach { bounds ->
+            val min = bounds.min
+            val max = bounds.max
+            val dim = max.sub(min, Vector2f())
+            val rad = Vector2f(dim.x / 2f, dim.y / 2f)
+            wallEntity.colorQuad(
+                rad.add(min),
+                dim,
+                BOMB_PLANT_COLOR,
                 z = 10
             )
         }

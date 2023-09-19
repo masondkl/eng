@@ -21,12 +21,17 @@ object Maps {
             val worldSize = int
             val world = ByteArray(worldSize * worldSize); get(world)
             val walls = ArrayList<Bounds>()
+            val plantBounds = ArrayList<Bounds>()
             for (i in 0 until int) walls.add(Bounds(
                 Vector2f(float, float),
                 Vector2f(float, float)
             ))
             for (i in 0 until int) counterSpawns[map].add(Vector2f(float, float))
             for (i in 0 until int) terroristSpawns[map].add(Vector2f(float, float))
+            for (i in 0 until int) plantBounds.add(Bounds(
+                Vector2f(float, float),
+                Vector2f(float, float)
+            ))
             val colliders = Array(worldSize * worldSize) {
                 if (world[it] in SOLIDS) {
                     val x = it % worldSize
@@ -44,7 +49,7 @@ object Maps {
                 corners[it * 4 + 2] = Vector2f(min.x, max.y)
                 corners[it * 4 + 3] = Vector2f(max.x, max.y)
             }
-            TileMap(mapNames[map], worldSize, walls, world, colliders, corners)
+            TileMap(mapNames[map], worldSize, walls, plantBounds, world, colliders, corners)
         }
     }
     fun random() = maps.indices.random()

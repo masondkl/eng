@@ -110,6 +110,7 @@ interface Match {
     var queryPrompt: String
     var map: TileMap?
     var mode: Int
+    var lastPlant: Long
     suspend fun send(block: suspend Write.() -> Unit)
 //    override var id = -1
 //    override val channel: Channel<suspend Write.() -> (Unit)> = Channel(
@@ -153,12 +154,13 @@ interface Match {
 //    }
 }
 
-const val OUT_JOIN = 0
-const val OUT_SHOOT = 1
-const val OUT_POS = 2
-const val OUT_CONFIRM_RESPAWN = 3
-const val OUT_RESPOND_QUERY = 4
-const val OUT_CALL_VOTE = 5
+const val OUT_SHOOT = 0
+const val OUT_POS = 1
+const val OUT_CONFIRM_RESPAWN = 2
+const val OUT_RESPOND_QUERY = 3
+const val OUT_CALL_VOTE = 4
+const val OUT_TRY_PLANT = 5
+const val OUT_CANCEL_PLANT = 6
 
 const val IN_JOIN = 0
 const val IN_EXIT = 1
@@ -170,6 +172,7 @@ const val IN_TRY_RESPAWN = 6
 const val IN_RESPAWN = 7
 const val IN_QUERY = 8
 const val IN_CANCEL_QUERY = 9
+const val IN_CONFIRM_PLANT = 10
 
 suspend fun client() = window {
     title = "title"
@@ -324,10 +327,13 @@ suspend fun client() = window {
         override var queryPrompt = ""
         override var map: TileMap? = null
         override var mode: Int = -1
+        override var lastPlant: Long = 0L
+
         override suspend fun send(block: suspend Write.() -> (Unit)) {
             channel.trySend(block)
         }
     }
+    val player = Player()
     CoroutineScope(DISPATCHER).launch {
         match.apply match@{
             val connection = provider.connect(address)
@@ -340,7 +346,7 @@ suspend fun client() = window {
                         println("gg1")
                         camera.set(vec2f())
                         val playerId = id
-                        players[id] = Player().apply player@{ this@player.id = playerId }
+                        players[id] = player.apply player@{ this@player.id = playerId }
                         println("gg2")
                         move()
                         launch {
@@ -418,6 +424,9 @@ suspend fun client() = window {
                                     println("cancelled")
                                     query = false
                                 }
+                                IN_CONFIRM_PLANT -> {
+
+                                }
                             }
                         }
                     }
@@ -456,8 +465,18 @@ suspend fun client() = window {
     }
     keyEvent += press@ { code, action ->
         if (code != GLFW_KEY_GRAVE_ACCENT || action != GLFW_PRESS) return@press
-        match.send {
-            int(OUT_CALL_VOTE)
+        match.send { int(OUT_CALL_VOTE) }
+    }
+    keyEvent += key@{ code, action ->
+        if (code != GLFW_KEY_E) return@key
+        if (action == GLFW_PRESS) {
+            match.send {
+                int(OUT_TRY_PLANT)
+            }
+        } else if (player.planting && action == GLFW_RELEASE) {
+            match.send {
+                int(OUT_CANCEL_PLANT)
+            }
         }
     }
     val keyIds = GLFW_KEY_1..GLFW_KEY_9
@@ -728,19 +747,19 @@ suspend fun client() = window {
             uiEntity.draw()
             uiColorEntity.draw()
             unclippedEntity.draw()
-//            glStencilFunc(GL_ALWAYS, 1, 0xFF)
-//            glStencilMask(0xFF)
-//            glColorMask(false, false, false, false)
-//            fovEntity.draw()
-//            glStencilMask(0x00)
-//            glStencilFunc(GL_EQUAL, 1, 0xFF)
-//            glColorMask(true, true, true, true)
+            glStencilFunc(GL_ALWAYS, 1, 0xFF)
+            glStencilMask(0xFF)
+            glColorMask(false, false, false, false)
+            fovEntity.draw()
+            glStencilMask(0x00)
+            glStencilFunc(GL_EQUAL, 1, 0xFF)
+            glColorMask(true, true, true, true)
             clippedEntity.draw()
             gunEntity.draw()
-//            glStencilFunc(GL_NOTEQUAL, 1, 0xFF)
-//            fogEntity.draw()
-//            glStencilMask(0xFF)
-//            glStencilFunc(GL_ALWAYS, 0, 0xFF)
+            glStencilFunc(GL_NOTEQUAL, 1, 0xFF)
+            fogEntity.draw()
+            glStencilMask(0xFF)
+            glStencilFunc(GL_ALWAYS, 0, 0xFF)
         }
         glfwSwapBuffers(window)
         glfwPollEvents()

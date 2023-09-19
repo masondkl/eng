@@ -9,10 +9,13 @@ import kotlinx.coroutines.channels.Channel.Factory.UNLIMITED
 import kotlinx.coroutines.channels.consumeEach
 import me.mason.shared.*
 import org.joml.Vector2f
+import sun.rmi.server.Dispatcher
 import java.nio.channels.AsynchronousChannelGroup
 import java.nio.channels.ClosedChannelException
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.locks.LockSupport
 import kotlin.math.PI
 import kotlin.math.atan2
@@ -23,12 +26,13 @@ import kotlin.time.Duration.Companion.seconds
 val SERVICE = Executors.newCachedThreadPool()
 val DISPATCHER = SERVICE.asCoroutineDispatcher()
 
-const val IN_JOIN = 0
-const val IN_SHOOT = 1
-const val IN_POS = 2
-const val IN_CONFIRM_RESPAWN = 3
-const val IN_RESPOND_QUERY = 4
-const val IN_CALL_VOTE = 5
+const val IN_SHOOT = 0
+const val IN_POS = 1
+const val IN_CONFIRM_RESPAWN = 2
+const val IN_RESPOND_QUERY = 3
+const val IN_CALL_VOTE = 4
+const val IN_TRY_PLANT = 5
+const val IN_CANCEL_PLANT = 6
 
 const val OUT_JOIN = 0
 const val OUT_EXIT = 1
@@ -40,14 +44,21 @@ const val OUT_TRY_RESPAWN = 6
 const val OUT_RESPAWN = 7
 const val OUT_QUERY = 8
 const val OUT_CANCEL_QUERY = 9
+const val OUT_CONFIRM_PLANT = 10
+const val OUT_CANCEL_PLANT = 11
+const val OUT_PLANT = 12
 
 const val FFA = 0
 const val TDM = 1
 const val SD = 2
 
+
+
 interface Match {
     var mode: Int
     var querying: Boolean
+    var ending: AtomicBoolean
+    var planted: AtomicBoolean
     val voters: BitSet
     val responses: IntArray
     val players: MutableList<ServerPlayer>
@@ -61,14 +72,22 @@ fun ServerPlayer(): ServerPlayer = object : ServerPlayer, Player by Player() {
     }
 }
 
+suspend fun MutableList<ServerPlayer>.send(block: suspend Write.(ServerPlayer) -> (Unit)) {
+    forEach { it.send { block(it) } }
+}
+
 suspend fun main() = runBlocking<Unit>(DISPATCHER) {
     val group = AsynchronousChannelGroup.withThreadPool(SERVICE)
     val provider = SocketProvider(9999, group)
     val address = Address("127.0.0.1", 9999)
     var entityId = 0
+    var plantId = 0
+    val plantCancels = ConcurrentHashMap<Int, Int>()
     object : Match {
-        override var mode = FFA
+        override var mode = SD
         override var querying = false
+        override var ending = AtomicBoolean(false)
+        override var planted = AtomicBoolean(false)
         override val voters = BitSet(256)
         override val responses = IntArray(256) { -1 }
         override val players = Collections.synchronizedList(ArrayList<ServerPlayer>())
@@ -78,6 +97,20 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
             val connection = provider.accept(address)
             val player = ServerPlayer().apply {
                 id = entityId++
+                if (mode == SD && players.any { it.alive && it.ct } || players.any { it.alive && it.t }) {
+                    alive = false
+                }
+                if (!ending.get() && (players.none { it.alive && it.ct } || players.none { it.alive && it.t })) {
+                    CoroutineScope(Dispatchers.IO).launch {
+                        ending.set(true)
+                        delay(5.seconds)
+                        ending.set(false)
+                        players.forEach { other ->
+                            other.ct = players.count { it.ct } <= players.count { it.t }
+                            other.send { int(OUT_TRY_RESPAWN) }
+                        }
+                    }
+                }
             }
             players.add(player)
             println("Join(${player.id})")
@@ -107,12 +140,16 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                 int(it.id)
                             }
                         }
-                        players.forEach { it.send {
+                        players.send {
                             if (player.id == it.id) return@send
                             println("sending ${player.id} join to ${it.id}")
                             int(OUT_JOIN)
                             int(player.id)
-                        } }
+                        }
+                        if (!player.alive) players.send {
+                            int(OUT_DIE)
+                            int(player.id)
+                        }
                         while (provider.isOpen && isActive) {
                             when (int()) {
                                 IN_POS -> {
@@ -132,10 +169,10 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
 //                                        Vector2f(max.x, min.y),
 //                                        Vector2f(min.x, max.y)
 //                                    )
-                                    println("out_pos: ${player.id}")
-                                    players.forEach { it.send {
+//                                    println("out_pos: ${player.id}")
+                                    players.send {
                                         if (player.id == it.id) return@send
-                                        println("sending to: ${it.id}")
+//                                        println("sending to: ${it.id}")
                                         int(OUT_POS)
                                         int(player.id)
                                         vec2f(player.nextPos)
@@ -159,18 +196,18 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
 //                                            vec2f(player.nextPos)
 //                                            float(player.dir)
 //                                        }
-                                    } }
+                                    }
                                 }
                                 IN_SHOOT -> {
                                     println("Shoot(${player.id})")
                                     val dir = vec2f()
                                     val start = Vector2f(player.nextPos)
-                                    players.forEach { it.send {
+                                    players.send {
                                         if (player.id == it.id) return@send
                                         int(OUT_SHOOT)
                                         vec2f(Vector2f(start).add(dir))
                                         vec2f(dir)
-                                    } }
+                                    }
                                     val playerHit = raycast<ServerPlayer>(start, Vector2f(dir).mul(0.1f), max = 100f) { ray ->
                                         val intersected = players.firstOrNull {
                                             if (mode == SD && player.t == it.t) return@firstOrNull false
@@ -190,12 +227,28 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                     if (hitPlayer.health <= 0f) {
                                         hitPlayer.alive = false
                                         println("Die(${hitPlayer.id})")
-                                        players.forEach { it.send {
+                                        players.send {
                                             println("sending die to ${it.id}")
                                             int(OUT_DIE)
                                             int(hitPlayer.id)
-                                        } }
-                                        if (mode == FFA) CoroutineScope(Dispatchers.IO).launch {
+                                        }
+                                        if (mode == SD) {
+                                            if (!ending.get()) {
+                                                if (players.none { it.alive && it.ct }) {
+                                                    //t wins
+                                                } else if (players.none { it.alive && it.t }) {
+                                                    //ct wins
+                                                }
+                                                CoroutineScope(Dispatchers.IO).launch {
+                                                    ending.set(true)
+                                                    delay(5.seconds)
+                                                    ending.set(false)
+                                                    players.forEach {
+                                                        it.send { int(OUT_TRY_RESPAWN) }
+                                                    }
+                                                }
+                                            }
+                                        } else CoroutineScope(Dispatchers.IO).launch {
                                             delay(1.seconds)
                                             hitPlayer.send { int(OUT_TRY_RESPAWN) }
                                         }
@@ -207,11 +260,11 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                         alive = true
                                         health = 1f
                                     }
-                                    players.forEach { it.send {
+                                    players.send {
                                         int(OUT_RESPAWN)
                                         int(player.id)
                                         vec2f(player.spawn(map, mode))
-                                    } }
+                                    }
                                 }
                                 IN_RESPOND_QUERY -> {
                                     val response = int()
@@ -234,7 +287,7 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                             int(OUT_QUERY)
                                             string("Vote for a map")
                                             int(Maps.mapNames.size)
-                                            Maps.mapNames.forEach { string(it) }
+                                            Maps.mapNames.forEach { name -> string(name) }
                                         }
                                     }
                                     CoroutineScope(Dispatchers.IO).launch delay@{
@@ -248,20 +301,32 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                             if (++counts[response] > counts[max]) max = response
                                         }
                                         if (max == map) {
-                                            players.forEach { it.send {
+                                            players.send {
                                                 int(OUT_CANCEL_QUERY)
-                                            } }
+                                            }
                                             return@delay
                                         }
                                         val last = map
                                         map = max
                                         println("SwapMap(last = ${Maps.mapNames[last]}, next = ${Maps.mapNames[map]})")
-                                        players.forEach { it.send {
+                                        players.send {
                                             int(OUT_CANCEL_QUERY)
                                             int(OUT_MAP)
                                             map(Maps[map])
                                             int(OUT_TRY_RESPAWN)
-                                        } }
+                                        }
+                                    }
+                                }
+                                IN_TRY_PLANT -> {
+                                    if (Maps[map].plantBounds.any { contains(player.nextPos, it.min, it.max) }) player.send {
+                                        int(OUT_CONFIRM_PLANT)
+                                        plantCancels[plantId++] = 0
+                                        CoroutineScope(Dispatchers.Default).launch {
+                                            delay(500)
+                                            if (plantCancels[plantId] == 0) {
+
+                                            }
+                                        }
                                     }
                                 }
                             }

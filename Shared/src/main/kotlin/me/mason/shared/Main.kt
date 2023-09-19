@@ -26,9 +26,6 @@ val TILES = Array(11) {
 }
 val SOLIDS = arrayOf(0.toByte(), 1.toByte())
 
-val VOTE_MAP = 0
-val VOTE_KICK = 1
-
 class Pool<T>(private val clear: (T) -> (T), size: Int = 1024, initial: () -> (T)) {
     companion object {
         val vec2f = Pool({ it.set(0f, 0f) }) { Vector2f() }
@@ -268,7 +265,7 @@ suspend fun Read.vec2f() = Vector2f(float(), float())
 suspend fun Read.vec2i() = Vector2i(int(), int())
 
 data class Bounds(val min: Vector2f = Vector2f(), val max: Vector2f = Vector2f())
-data class TileMap(val name: String, val worldSize: Int, val walls: List<Bounds>, val world: ByteArray, val colliders: Array<Collider>, val corners: Array<Vector2f>)
+data class TileMap(val name: String, val worldSize: Int, val walls: List<Bounds>, val plantBounds: List<Bounds>, val world: ByteArray, val colliders: Array<Collider>, val corners: Array<Vector2f>)
 
 //tileColliders = Array(map.worldSize * map.worldSize) {
 //    if (map.world[it] in SOLIDS) {
@@ -293,9 +290,14 @@ suspend fun Write.map(map: TileMap) {
     string(map.name)
     int(map.worldSize)
     int(map.walls.size)
+    int(map.plantBounds.size)
     for (wall in map.walls) {
         vec2f(wall.min)
         vec2f(wall.max)
+    }
+    for (bounds in map.plantBounds) {
+        vec2f(bounds.min)
+        vec2f(bounds.max)
     }
     bytes(map.world, map.worldSize * map.worldSize, 0)
 }
@@ -304,8 +306,11 @@ suspend fun Read.map(): TileMap {
     val name = string()
     val worldSize = int()
     val wallCount = int()
+    val plantBoundsCount = int()
     val walls = ArrayList<Bounds>()
     (0 until wallCount).forEach { _ -> walls.add(Bounds(vec2f(), vec2f())) }
+    val plantBounds = ArrayList<Bounds>()
+    (0 until plantBoundsCount).forEach { _ -> plantBounds.add(Bounds(vec2f(), vec2f())) }
     val bytes = ByteArray(worldSize * worldSize)
     bytes(bytes, worldSize * worldSize, 0)
     val colliders = Array(worldSize * worldSize) {
@@ -325,7 +330,7 @@ suspend fun Read.map(): TileMap {
         corners[it * 4 + 2] = Vector2f(min.x, max.y)
         corners[it * 4 + 3] = Vector2f(max.x, max.y)
     }
-    return TileMap(name, worldSize, walls, bytes, colliders, corners)
+    return TileMap(name, worldSize, walls, plantBounds, bytes, colliders, corners)
 }
 
 fun contains(pos: Vector2f, otherPos: Vector2f, otherDim: Vector2f): Boolean {
