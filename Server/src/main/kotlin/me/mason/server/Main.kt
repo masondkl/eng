@@ -9,18 +9,12 @@ import kotlinx.coroutines.channels.Channel.Factory.UNLIMITED
 import kotlinx.coroutines.channels.consumeEach
 import me.mason.shared.*
 import org.joml.Vector2f
-import sun.rmi.server.Dispatcher
 import java.nio.channels.AsynchronousChannelGroup
 import java.nio.channels.ClosedChannelException
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.locks.LockSupport
-import kotlin.math.PI
-import kotlin.math.atan2
-import kotlin.math.cos
-import kotlin.math.sin
 import kotlin.time.Duration.Companion.seconds
 
 val SERVICE = Executors.newCachedThreadPool()
@@ -211,7 +205,7 @@ suspend fun main() = runBlocking<Unit>(DISPATCHER) {
                                     val playerHit = raycast<ServerPlayer>(start, Vector2f(dir).mul(0.1f), max = 100f) { ray ->
                                         val intersected = players.firstOrNull {
                                             if (mode == SD && player.t == it.t) return@firstOrNull false
-                                            contains(ray, it.pos, TILE_SIZE) && player.id != it.id
+                                            contains(ray, it.pos, TILE_DIM) && player.id != it.id
                                         }
                                         if (intersected != null) collision = intersected
                                         intersected != null

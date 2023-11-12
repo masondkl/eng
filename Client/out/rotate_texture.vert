@@ -1,13 +1,16 @@
 #version 330 core
-layout (location=0) in vec3 aPos;
-layout (location=1) in vec2 aPivot;
-layout (location=2) in float aRotation;
-layout (location=3) in float aTexPosition;
+
+layout (location=0) in float texture;
+layout (location=1) in vec3 aPos;
+layout (location=2) in vec2 aPivot;
+layout (location=3) in float aRotation;
+layout (location=4) in float aTexPosition;
 
 uniform mat4 projection;
 uniform mat4 view;
 
-out vec2 fTexPosition;
+flat out int out_texture;
+out vec2 out_uv;
 
 void main()
 {
@@ -21,6 +24,7 @@ void main()
         cosa * position.y + sina * position.x,
         position.z
     ) + vec3Pivot;
-    fTexPosition = vec2(mod(aTexPosition, 512.0), aTexPosition / 512.0) / 512.0;
+    out_texture = int(texture);
+    out_uv = vec2(mod(aTexPosition, 512.0), aTexPosition / 512.0) / 512.0;
     gl_Position = projection * view * vec4(pos, 1.0);
 }

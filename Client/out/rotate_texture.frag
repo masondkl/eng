@@ -1,13 +1,14 @@
 #version 330 core
 
-uniform sampler2D TEX_SAMPLER;
+uniform sampler2D SAMPLERS[];
 
-in vec2 fTexPosition;
+flat in int out_texture;
+in vec2 out_uv;
 
 out vec4 color;
 
 void main()
 {
-    color = texture(TEX_SAMPLER, fTexPosition);
+    color = texture(SAMPLERS[out_texture], out_uv);
     if (color.w == 0.0f) discard;
 }

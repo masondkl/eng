@@ -36,7 +36,7 @@ object Maps {
                 if (world[it] in SOLIDS) {
                     val x = it % worldSize
                     val y = it / worldSize
-                    Collider(Vector2f(x.toFloat(), y.toFloat()), TILE_SIZE)
+                    Collider(Vector2f(x.toFloat(), y.toFloat()), TILE_DIM)
                 } else Collider(Vector2f(0f, 0f), Vector2f(0f, 0f))
             }
             val corners = Array(walls.size * 4) { Vector2f() }

@@ -16,12 +16,12 @@ val BOMB_DEFUSE_RADIUS = 9.5f / 2f
 
 const val LERP_POS_RATE = 50L
 
-val TILE_SIZE = Vector2f(1.0f, 1.0f)
-val TILE_RADIUS = Vector2f(0.5f, 0.5f)
-val TILE_UV_SIZE = Vector2i(4, 4)
+val TILE_DIM = Vector2f(1.0f, 1.0f)
+val TILE_RAD = Vector2f(0.5f, 0.5f)
+val TILE_UV_DIM = Vector2i(4, 4)
 val TILES = Array(11) {
     val x = it * 4
-    val y = 508
+    val y = 123
     Vector2i(x, y)
 }
 val SOLIDS = arrayOf(0.toByte(), 1.toByte())
@@ -43,8 +43,8 @@ class Pool<T>(private val clear: (T) -> (T), size: Int = 1024, initial: () -> (T
 }
 
 
-const val RENDER_SIZE = 82
-const val RENDER_RADIUS = RENDER_SIZE / 2
+const val RENDER_DIM = 82
+const val RENDER_RAD = RENDER_DIM / 2
 
 data class Collider(val pos: Vector2f, val dim: Vector2f)
 
@@ -96,21 +96,12 @@ data class TiledRay(
     var distance: Float = 0f
 )
 
-//interface RayResult<T> {
-//    val result: Boolean
-//    var data: T?
-//    val distance: Float
-//    val hit: Vector2f
-//    val hitTile: Vector2i
-//    val side: Int
-//}
-
 fun ByteArray.tiledRaycast(
     worldSize: Int,
     start: Vector2f,
     dir: Vector2f,
     result: TiledRay,
-    max: Float = RENDER_RADIUS.toFloat()
+    max: Float = RENDER_RAD.toFloat()
 ): TiledRay {
     val currentTileCoord = Vector2i(start.x.roundToInt(), start.y.roundToInt())
     val bottomLeft = Vector2f(currentTileCoord.x - 0.5f, currentTileCoord.y - 0.5f)
@@ -175,7 +166,7 @@ interface Ray<T> {
 fun <T> raycastBlocking(
     start: Vector2f,
     dir: Vector2f,
-    max: Float = RENDER_RADIUS.toFloat(),
+    max: Float = RENDER_RAD.toFloat(),
     test: Ray<T>.(Vector2f) -> (Boolean)
 ): Ray<T> {
     val position = start.copy()
@@ -267,6 +258,16 @@ suspend fun Read.vec2i() = Vector2i(int(), int())
 data class Bounds(val min: Vector2f = Vector2f(), val max: Vector2f = Vector2f())
 data class TileMap(val name: String, val worldSize: Int, val walls: List<Bounds>, val plantBounds: List<Bounds>, val world: ByteArray, val colliders: Array<Collider>, val corners: Array<Vector2f>)
 
+fun emptyTileMap(): TileMap {
+    val worldSize = 64
+    return TileMap(
+        "Empty", worldSize, emptyList(), emptyList(),
+        ByteArray(worldSize * worldSize) { 6 },
+        Array(worldSize * worldSize) { Collider(Vector2f(), Vector2f()) },
+        emptyArray()
+    )
+}
+
 //tileColliders = Array(map.worldSize * map.worldSize) {
 //    if (map.world[it] in SOLIDS) {
 //        val x = it % map.worldSize
@@ -317,7 +318,7 @@ suspend fun Read.map(): TileMap {
         if (bytes[it] in SOLIDS) {
             val x = it % worldSize
             val y = it / worldSize
-            Collider(Vector2f(x.toFloat(), y.toFloat()), TILE_SIZE)
+            Collider(Vector2f(x.toFloat(), y.toFloat()), TILE_DIM)
         } else Collider(Vector2f(0f, 0f), Vector2f(0f, 0f))
     }
     val corners = Array(walls.size * 4) { Vector2f() }

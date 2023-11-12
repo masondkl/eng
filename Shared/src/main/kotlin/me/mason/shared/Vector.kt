@@ -5,13 +5,6 @@ import org.joml.Vector2i
 import java.lang.Math.sqrt
 import kotlin.math.*
 
-fun Vector2f.normal(): Vector2f {
-    val mag = sqrt(x * x + y * y)
-    if (mag == 0f) return this
-    x /= mag
-    y /= mag
-    return this
-}
 fun Vector2f.copy() = Vector2f(x, y)
 fun Vector2i.copy() = Vector2i(x, y)
 fun Vector2f.int() = Vector2i(x.toInt(), y.toInt())
