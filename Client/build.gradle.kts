@@ -24,7 +24,7 @@ dependencies {
     implementation(kotlin("stdlib-jdk8"))
 }
 
-val outDir = project.properties["outdir"] as? String ?: "./out"
+val outDir = project.properties["outdir"] as? String ?: "."
 
 tasks.shadowJar {
     println("Destination directory: $outDir")

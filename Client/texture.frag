@@ -13,12 +13,11 @@ out vec4 color;
 void main()
 {
     color = texture(SAMPLERS[out_tex], out_tex_pos);
-    if (out_character == 1 && color.x == 1f && color.y == 1f && color.z == 1f) {
+    if (out_character == 1 && color.w != 0f) {
         color.x = out_color.x;
         color.y = out_color.y;
         color.z = out_color.z;
-    }
-    if (out_fill == 1) {
+    } else if (out_fill == 1) {
         color.x = out_color.x;
         color.y = out_color.y;
         color.z = out_color.z;
